@@ -120,6 +120,47 @@ services:
       retries: 10
       start_period: 30s
 
+  # Own container, own volume, published on 5434 - same database-per-
+  # service reasoning as subscription-postgres above.
+  billing-postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: billing
+      POSTGRES_USER: billing
+      POSTGRES_PASSWORD: billing
+    ports:
+      - "5434:5432"
+    volumes:
+      - billing_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U billing -d billing"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  billing-service:
+    build: ./billing-service
+    ports:
+      - "8082:8082"
+    environment:
+      DB_HOST: billing-postgres
+      DB_PORT: "5432"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      billing-postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
 volumes:
   kafka_data:
   subscription_postgres_data:
+  billing_postgres_data:

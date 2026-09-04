@@ -54,6 +54,30 @@ public class Subscription {
         this.createdAt = now;
     }
 
+    /**
+     * The only two transitions this class supports right now - both
+     * guarded to fire only from PENDING_PAYMENT, which is what makes
+     * this safe against a redelivered PaymentSucceeded/PaymentFailed
+     * event: applying either one again once the subscription has
+     * already left PENDING_PAYMENT is a silent no-op instead of
+     * corrupting a later state (e.g. re-activating a since-cancelled
+     * subscription). A narrower, state-shape guard than the eventId-
+     * keyed dedup table coming in step 5-6 - not a replacement for it,
+     * just enough to be correct for the one redelivery scenario that
+     * actually exists in this system so far.
+     */
+    public void activate() {
+        if (status == SubscriptionStatus.PENDING_PAYMENT) {
+            this.status = SubscriptionStatus.ACTIVE;
+        }
+    }
+
+    public void enterGracePeriod() {
+        if (status == SubscriptionStatus.PENDING_PAYMENT) {
+            this.status = SubscriptionStatus.GRACE_PERIOD;
+        }
+    }
+
     public UUID getId() {
         return id;
     }

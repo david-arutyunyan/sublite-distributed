@@ -13,8 +13,8 @@ Kubernetes-манифесты под kind, Prometheus/Grafana, OpenTelemetry/Jae
 
 | Сервис | Стек | Статус |
 |---|---|---|
-| subscription-service | Java 21, Spring Boot 4, Postgres | покупка подписки + Transactional Outbox |
-| billing-service | Java 21, Spring Boot 4, Postgres | не начат |
+| subscription-service | Java 21, Spring Boot 4, Postgres | покупка подписки + Transactional Outbox + консьюмер billing.events |
+| billing-service | Java 21, Spring Boot 4, Postgres | списание по SubscriptionCreated + Transactional Outbox |
 | notification-service | Java 21, Spring Boot 4, MongoDB | не начат |
 | analytics-service | Go, Postgres | не начат (опционально) |
 
@@ -26,13 +26,14 @@ docker compose up -d --build
 
 Поднимает Kafka (KRaft, один брокер) + создаёт топики из
 `docs/architecture.md` + [Kafka UI](http://localhost:8090) для просмотра
-топиков/партиций/сообщений + subscription-service (`localhost:8081`) со
-своим Postgres.
+топиков/партиций/сообщений + subscription-service (`localhost:8081`) и
+billing-service (`localhost:8082`), каждый со своим Postgres.
 
 ```bash
 docker compose ps
 docker compose logs kafka-init          # список созданных топиков
 docker compose logs subscription-service -f
+docker compose logs billing-service -f
 ```
 
 Купить подписку (два демо-плана уже засеяны — `docs/architecture.md`
@@ -45,15 +46,28 @@ curl -X POST http://localhost:8081/subscriptions \
   -d '{"customerId":"11111111-2222-3333-4444-555555555555","planPriceId":"33333333-3333-3333-3333-333333333333"}'
 ```
 
-Ответ — `status: PENDING_PAYMENT` (не `ACTIVE` — списание асинхронное,
-через billing-service, которого пока нет, см. `SubscriptionStatus.java`).
-Событие `SubscriptionCreated` уходит в топик `subscription.events`
-(ключ — `subscriptionId`) в течение секунды — смотреть либо в Kafka UI,
-либо:
+Ответ — `status: PENDING_PAYMENT`. Списание асинхронное: subscription-service
+публикует `SubscriptionCreated` в `subscription.events` (ключ — `subscriptionId`),
+billing-service его подхватывает, списывает через `RandomPaymentGateway`
+(20% деклайнов — намеренно, чтобы был виден и happy path, и grace period) и
+публикует `PaymentSucceeded`/`PaymentFailed` в `billing.events`; subscription-service
+подхватывает это и переводит подписку в `ACTIVE` либо `GRACE_PERIOD` — обычно
+в пределах пары секунд. GET-эндпоинта пока нет, проверить статус можно так:
+
+```bash
+docker exec sublite-distributed-subscription-postgres-1 psql -U subscription -d subscription \
+  -c "select id, status from subscriptions;"
+```
+
+Смотреть события — либо в Kafka UI, либо:
 
 ```bash
 docker exec sublite-kafka /opt/kafka/bin/kafka-console-consumer.sh \
   --bootstrap-server localhost:9092 --topic subscription.events \
+  --property print.key=true --from-beginning
+
+docker exec sublite-kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --topic billing.events \
   --property print.key=true --from-beginning
 ```
 
@@ -61,8 +75,8 @@ docker exec sublite-kafka /opt/kafka/bin/kafka-console-consumer.sh \
 
 1. ~~Границы сервисов и схема событий~~ — [docs/architecture.md](docs/architecture.md)
 2. ~~Kafka в Compose, топики~~
-3. ~~Transactional Outbox (поллер) в subscription-service~~ — этот шаг
-4. Вынос billing-service, консьюмер SubscriptionCreated
+3. ~~Transactional Outbox (поллер) в subscription-service~~
+4. ~~Вынос billing-service, консьюмер SubscriptionCreated~~ — этот шаг
 5-6. notification-service, идемпотентные консьюмеры, DLQ
 7. Saga с компенсацией на сценарий отмены подписки
 8. Resilience4j: circuit breaker, retry, таймауты

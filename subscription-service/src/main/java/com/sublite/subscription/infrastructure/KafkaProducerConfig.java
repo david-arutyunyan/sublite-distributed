@@ -1,8 +1,6 @@
 package com.sublite.subscription.infrastructure;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.sublite.subscription.application.EventEnvelope;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringSerializer;
@@ -33,8 +31,20 @@ public class KafkaProducerConfig {
     @Value("${spring.kafka.bootstrap-servers}")
     private String bootstrapServers;
 
+    /**
+     * The JsonSerializer needs Boot's OWN ObjectMapper bean here, not a
+     * bare `new ObjectMapper()` - Boot's autoconfigured one already
+     * disables WRITE_DATES_AS_TIMESTAMPS and registers JavaTimeModule by
+     * default (that's why every REST response elsewhere in this project
+     * already renders Instant as an ISO-8601 string without any special
+     * config). A hand-built ObjectMapper doesn't inherit any of that -
+     * exactly the gap that shipped occurredAt as a numeric epoch
+     * timestamp the first time this class was written, silently, until a
+     * live Kafka message caught it. Reuse Boot's, don't rebuild a worse
+     * copy of it.
+     */
     @Bean
-    public ProducerFactory<String, EventEnvelope> producerFactory() {
+    public ProducerFactory<String, EventEnvelope> producerFactory(ObjectMapper objectMapper) {
         Map<String, Object> props = new HashMap<>();
         props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         // Idempotent PRODUCER (default true in modern Kafka clients, set
@@ -44,18 +54,6 @@ public class KafkaProducerConfig {
         // this alone does nothing about a consumer seeing this same
         // message twice after a rebalance or a crash-before-commit.
         props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
-
-        // A serializer INSTANCE, not the class (Kafka would otherwise
-        // reflectively construct JsonSerializer with its own default
-        // ObjectMapper) - needed so occurredAt (an Instant) writes as an
-        // ISO-8601 string matching docs/architecture.md's envelope, not
-        // Jackson's default of a numeric epoch-seconds timestamp. That
-        // default would have quietly broken the future Go consumer:
-        // Go's encoding/json + time.Time expects RFC3339 strings, not a
-        // float.
-        ObjectMapper objectMapper = new ObjectMapper()
-                .registerModule(new JavaTimeModule())
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
         return new DefaultKafkaProducerFactory<>(props, new StringSerializer(), new JsonSerializer<>(objectMapper));
     }
 
