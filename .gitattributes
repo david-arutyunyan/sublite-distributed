@@ -3,3 +3,6 @@
 # or directory" error, not a cosmetic issue. Force LF regardless of this
 # machine's core.autocrlf.
 *.sh text eol=lf
+# mvnw has no extension but is the same story - every service's
+# Dockerfile RUNs it inside a Linux build stage (`./mvnw -B ...`).
+mvnw text eol=lf

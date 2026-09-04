@@ -76,5 +76,50 @@ services:
       kafka:
         condition: service_healthy
 
+  # One Postgres CONTAINER per service, not one instance with per-service
+  # schemas (the monolith's approach) - a shared instance is a shared
+  # failure domain and an easy back door for one service to reach into
+  # another's tables "just this once". Published on 5433, not 5432 -
+  # sublite-core's own Postgres already claims 5432 and the two projects
+  # plausibly run side by side on this machine.
+  subscription-postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: subscription
+      POSTGRES_USER: subscription
+      POSTGRES_PASSWORD: subscription
+    ports:
+      - "5433:5432"
+    volumes:
+      - subscription_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U subscription -d subscription"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  subscription-service:
+    build: ./subscription-service
+    ports:
+      - "8081:8081"
+    environment:
+      DB_HOST: subscription-postgres
+      DB_PORT: "5432"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      subscription-postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
 volumes:
   kafka_data:
+  subscription_postgres_data:

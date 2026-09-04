@@ -1,0 +1,39 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: subscription-service
+
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:subscription}
+    username: ${DB_USER:subscription}
+    password: ${DB_PASSWORD:subscription}
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+  flyway:
+    enabled: true
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+
+logging:
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%X{correlationId:-no-correlation-id}] %logger{36} - %msg%n"
+
+sublite:
+  outbox:
+    # A demo-friendly cadence, not a production one - fast enough to
+    # watch an event go from "purchased" to "in Kafka" in the time it
+    # takes to run a curl and a console-consumer side by side.
+    poll-interval-ms: 1000
