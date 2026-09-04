@@ -88,8 +88,13 @@ subscription-service знает, когда подписка "созрела" д
 | `notification.events` | NotificationSent / NotificationFailed | customerId | notification-service | (саге/DLQ-наблюдаемость) |
 
 Каждый топик из этой таблицы имеет DLQ-двойник (`<topic>.DLQ`) — созданы
-заранее в `kafka/create-topics.sh`, реальные consumer'ы с retry+DLQ появятся
-в шагах 5-6.
+заранее в `kafka/create-topics.sh`, retry+DLQ на реальных consumer'ах —
+шаг 6 (ещё не сделан).
+
+На сегодня в коде реализовано и реально публикуется только три события:
+`SubscriptionCreated`, `PaymentSucceeded`, `PaymentFailed` — остальные
+строки таблицы фиксируют целевую форму системы (нужны для saga на шаге 7),
+но самих publisher'ов для них пока нет.
 
 ## Ключ сообщения
 
@@ -147,6 +152,43 @@ At-least-once + идемпотентный consumer, не exactly-once. Kafka Tr
 дают EOS только строго внутри Kafka или Kafka→одна БД через outbox — не
 через границу независимых сервисов с раздельными БД. Промышленный паттерн —
 не бороться за EOS, а сделать side-effect идемпотентным через дедуп-таблицу.
+
+## Идемпотентные consumer'ы (шаг 5, сделано)
+
+`subscription-service` и `billing-service` — каждый со своей таблицей
+`processed_messages` (`event_id UUID PRIMARY KEY`). Проверка "уже
+обработано?" и запись в эту таблицу происходят в ОДНОЙ локальной
+`@Transactional`-транзакции с самим side-effect'ом (списание, смена
+статуса подписки) — падение между "сделали" и "записали, что сделали"
+невозможно: либо оба произошли, либо ни один, повторная доставка в любом
+случае безопасна.
+
+`notification-service` (MongoDB) — та же гарантия, другой механизм:
+у документа `Notification` `_id` — это сам `eventId`, и `insert()` (не
+`save()` — тот делает upsert и молча перезапишет документ) кидает
+`DuplicateKeyException` на повторе. Естественная уникальность `_id` вместо
+отдельной дедуп-таблицы — там, где единственный side-effect и есть сама
+запись, а не что-то, что нужно защищать отдельно.
+
+Проверено не вызовом метода дважды, а настоящей передоставкой: захвачено
+реальное сообщение `SubscriptionCreated` с боевого топика и опубликовано
+повторно байт-в-байт (тот же `eventId`) — `billing-service` залогировал
+skip и не создал второй Invoice.
+
+`notification-service` также держит `subscription_projections` — локальную
+проекцию `subscriptionId -> customerId`, построенную из `SubscriptionCreated`
+(не синхронный запрос в subscription-service — database-per-service такое
+не позволяет, да и не должен). `billing.events` не несёт customerId
+(billing-service тоже не владеет данными клиента), поэтому уведомление по
+оплате достаёт customerId из этой проекции. Живая проверка вскрыла реальный
+гоч: у свежего consumer group'а с `auto.offset.reset=earliest` при первом
+старте (или после большого бэклога) `billing.events` и `subscription.events`
+догоняются НЕЗАВИСИМО — нет гарантии, что проекция из одного топика успеет
+собраться раньше, чем событие из другого топика её потребует. Раз
+случилось на реальном стеке: уведомление об оплате пришло раньше, чем
+`SubscriptionCreated` для той же подписки успел построить проекцию.
+Обработано явным fallback (customerId = "unknown" + warning в лог), а не
+падением или потерей уведомления.
 
 ## Грабли
 

@@ -160,7 +160,46 @@ services:
       retries: 10
       start_period: 30s
 
+  # MongoDB, not Postgres - the one deliberate polyglot-persistence choice
+  # in this project (see docs/architecture.md's service table). No
+  # healthcheck tool baked into the mongo image the way pg_isready is for
+  # Postgres - `db.adminCommand('ping')` via mongosh is the equivalent.
+  notification-mongo:
+    image: mongo:7.0
+    ports:
+      - "27018:27017"
+    volumes:
+      - notification_mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  notification-service:
+    build: ./notification-service
+    ports:
+      - "8083:8083"
+    environment:
+      DB_HOST: notification-mongo
+      DB_PORT: "27017"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      notification-mongo:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
 volumes:
   kafka_data:
   subscription_postgres_data:
   billing_postgres_data:
+  notification_mongo_data:
