@@ -34,3 +34,13 @@ logging:
 sublite:
   outbox:
     poll-interval-ms: 1000
+  kafka:
+    retry:
+      # 4 attempts, ~500ms/1s/2s backoff (capped at max-interval) before
+      # a message is dead-lettered - long enough to ride out a brief
+      # blip, short enough that a genuinely broken dependency surfaces on
+      # the DLQ in a few seconds, not minutes.
+      max-attempts: 4
+      initial-interval-ms: 500
+      multiplier: 2.0
+      max-interval-ms: 5000

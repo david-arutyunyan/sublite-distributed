@@ -2,6 +2,7 @@ package com.sublite.billing;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sublite.billing.application.DlqReplayService;
 import com.sublite.billing.application.OutboxPoller;
 import com.sublite.billing.domain.ChargeResult;
 import com.sublite.billing.domain.Money;
@@ -40,6 +41,9 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -50,7 +54,16 @@ import static org.mockito.Mockito.when;
  * consumer group wiring in KafkaConsumerConfig are all genuinely
  * exercised - not just the business logic underneath them.
  */
-@TestPropertySource(properties = "sublite.outbox.poll-interval-ms=3600000")
+@TestPropertySource(properties = {
+        "sublite.outbox.poll-interval-ms=3600000",
+        // Fast retries for the DLQ tests below - the point under test is
+        // "does it retry N times then dead-letter", not "does the
+        // production backoff timing feel right".
+        "sublite.kafka.retry.max-attempts=2",
+        "sublite.kafka.retry.initial-interval-ms=50",
+        "sublite.kafka.retry.multiplier=1.0",
+        "sublite.kafka.retry.max-interval-ms=50"
+})
 @SpringBootTest
 @Testcontainers
 class SubscriptionEventChargingIT {
@@ -78,6 +91,8 @@ class SubscriptionEventChargingIT {
     private InvoiceRepository invoices;
     @Autowired
     private ProcessedMessageRepository processedMessages;
+    @Autowired
+    private DlqReplayService dlqReplayService;
 
     @MockitoBean
     private PaymentGateway paymentGateway;
@@ -158,6 +173,75 @@ class SubscriptionEventChargingIT {
 
         assertThat(invoices.findBySubscriptionId(subscriptionId)).hasSize(1);
         assertThat(processedMessages.findById(eventId)).isPresent();
+    }
+
+    @Test
+    void malformedMessageGoesStraightToDlqWithoutRetrying() throws Exception {
+        String key = UUID.randomUUID().toString();
+        publishRaw("subscription.events", key, "this is not JSON at all");
+
+        // No retries expected for this one - JsonProcessingException is
+        // registered as non-retryable, so this should land on the DLQ
+        // fast, not after ~150ms of backoff.
+        ConsumerRecord<String, String> dlqRecord = consumeRecordWithKey("subscription.events.DLQ", key);
+        assertThat(dlqRecord.value()).isEqualTo("this is not JSON at all");
+    }
+
+    @Test
+    void aPersistentGatewayFailureEndsUpOnTheDlqAfterRetries() throws Exception {
+        when(paymentGateway.charge(any())).thenThrow(new RuntimeException("simulated gateway outage"));
+        UUID subscriptionId = UUID.randomUUID();
+
+        publishSubscriptionCreated(subscriptionId, CUSTOMER_ID, "9.99", "USD", UUID.randomUUID());
+
+        ConsumerRecord<String, String> dlqRecord = consumeRecordWithKey("subscription.events.DLQ", subscriptionId.toString());
+        assertThat(objectMapper.readTree(dlqRecord.value()).get("eventType").asText()).isEqualTo("SubscriptionCreated");
+
+        // max-attempts=2 in this test's properties -> 1 initial try + 2
+        // retries = 3 calls to the gateway before giving up. The whole
+        // chargeNewSubscription transaction rolled back every time (the
+        // gateway throws before any save commits), so nothing was ever
+        // persisted - not even a "FAILED" invoice.
+        verify(paymentGateway, atLeast(3)).charge(any());
+        assertThat(invoices.findBySubscriptionId(subscriptionId)).isEmpty();
+    }
+
+    @Test
+    void replayingADeadLetteredMessageReprocessesItSuccessfully() throws Exception {
+        when(paymentGateway.charge(any())).thenThrow(new RuntimeException("simulated gateway outage"));
+        UUID subscriptionId = UUID.randomUUID();
+
+        publishSubscriptionCreated(subscriptionId, CUSTOMER_ID, "9.99", "USD", UUID.randomUUID());
+        consumeRecordWithKey("subscription.events.DLQ", subscriptionId.toString());
+        assertThat(invoices.findBySubscriptionId(subscriptionId)).isEmpty();
+
+        // The "outage" is over - a real operator would confirm this some
+        // other way (a dashboard, a status page) before replaying;
+        // here it's just flipping the mock. doReturn(), not
+        // when(...).thenReturn(): the gateway is currently stubbed to
+        // THROW, and when(mock.method()).thenReturn(...) has to call the
+        // real (mocked) method to register the new stub - which would
+        // trigger the still-active throw. doReturn().when(mock).method()
+        // sidesteps that by never invoking the method at all.
+        doReturn(new ChargeResult.Success("ref-after-replay")).when(paymentGateway).charge(any());
+
+        int replayedCount = dlqReplayService.replay("subscription.events");
+        assertThat(replayedCount).isEqualTo(1);
+
+        awaitInvoiceFor(subscriptionId);
+        assertThat(invoices.findBySubscriptionId(subscriptionId))
+                .singleElement()
+                .satisfies(invoice -> assertThat(invoice.getStatus().name()).isEqualTo("PAID"));
+    }
+
+    private void publishRaw(String topic, String key, String value) throws Exception {
+        Properties props = new Properties();
+        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
+        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        try (KafkaProducer<String, String> producer = new KafkaProducer<>(props)) {
+            producer.send(new ProducerRecord<>(topic, key, value)).get(10, java.util.concurrent.TimeUnit.SECONDS);
+        }
     }
 
     private void publishSubscriptionCreated(UUID subscriptionId, UUID customerId, String amount, String currency, UUID correlationId)

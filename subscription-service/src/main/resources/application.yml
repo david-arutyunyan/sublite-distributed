@@ -37,3 +37,9 @@ sublite:
     # watch an event go from "purchased" to "in Kafka" in the time it
     # takes to run a curl and a console-consumer side by side.
     poll-interval-ms: 1000
+  kafka:
+    retry:
+      max-attempts: 4
+      initial-interval-ms: 500
+      multiplier: 2.0
+      max-interval-ms: 5000

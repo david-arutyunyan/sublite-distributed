@@ -1,7 +1,11 @@
 package com.sublite.subscription.infrastructure;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -9,27 +13,40 @@ import org.springframework.kafka.annotation.EnableKafka;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.support.ExponentialBackOffWithMaxRetries;
 
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Same shape as billing-service's KafkaConsumerConfig - see its javadoc
- * for why this consumes raw String (not JsonDeserializer<EventEnvelope>:
- * a type header naming billing-service's own EventEnvelope class isn't
- * something this service's classpath can or should resolve) and why
- * AckMode.RECORD replaces Kafka's native auto-commit. group.id is this
- * service's own ("subscription-service") - independent from
- * billing-service's group on the SAME topic, each gets the full stream
- * (docs/architecture.md's consumer-groups section).
+ * Same shape as billing-service's own KafkaConsumerConfig - see its
+ * javadoc for why this consumes raw String (not JsonDeserializer<T> with
+ * trusted type headers) and why AckMode.RECORD replaces Kafka's native
+ * auto-commit. group.id is this service's own ("subscription-service") -
+ * independent from billing-service's group on the SAME topic, each gets
+ * the full stream (docs/architecture.md's consumer-groups section).
  */
 @Configuration
 @EnableKafka
 public class KafkaConsumerConfig {
 
+    private static final Logger log = LoggerFactory.getLogger(KafkaConsumerConfig.class);
+
     @Value("${spring.kafka.bootstrap-servers}")
     private String bootstrapServers;
+
+    @Value("${sublite.kafka.retry.max-attempts:4}")
+    private int retryMaxAttempts;
+    @Value("${sublite.kafka.retry.initial-interval-ms:500}")
+    private long retryInitialIntervalMs;
+    @Value("${sublite.kafka.retry.multiplier:2.0}")
+    private double retryMultiplier;
+    @Value("${sublite.kafka.retry.max-interval-ms:5000}")
+    private long retryMaxIntervalMs;
 
     @Bean
     public ConsumerFactory<String, String> consumerFactory() {
@@ -43,13 +60,47 @@ public class KafkaConsumerConfig {
         return new DefaultKafkaConsumerFactory<>(props);
     }
 
+    /**
+     * Same retry+DLQ mechanism as billing-service's own KafkaConsumerConfig
+     * - see its javadoc for the full reasoning (which exceptions skip
+     * straight to the DLQ vs. get retried with backoff first, and why
+     * gotcha #3 in docs/architecture.md is what this actually fixes).
+     */
+    @Bean
+    public DefaultErrorHandler kafkaErrorHandler(KafkaTemplate<String, String> dlqKafkaTemplate) {
+        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(dlqKafkaTemplate,
+                (record, ex) -> {
+                    log.error("Sending to DLQ after {}: topic={}, partition={}, offset={}, key={}",
+                            ex.getClass().getSimpleName(), record.topic(), record.partition(), record.offset(), record.key(), ex);
+                    return new TopicPartition(record.topic() + ".DLQ", record.partition());
+                });
+
+        ExponentialBackOffWithMaxRetries backOff = new ExponentialBackOffWithMaxRetries(retryMaxAttempts);
+        backOff.setInitialInterval(retryInitialIntervalMs);
+        backOff.setMultiplier(retryMultiplier);
+        backOff.setMaxInterval(retryMaxIntervalMs);
+
+        DefaultErrorHandler errorHandler = new DefaultErrorHandler(recoverer, backOff);
+        errorHandler.addNotRetryableExceptions(
+                JsonProcessingException.class,
+                IllegalArgumentException.class,
+                NullPointerException.class
+        );
+        errorHandler.setRetryListeners((record, ex, deliveryAttempt) ->
+                log.warn("Retry attempt {} for topic={}, partition={}, offset={}: {}",
+                        deliveryAttempt, record.topic(), record.partition(), record.offset(), ex.getMessage()));
+        return errorHandler;
+    }
+
     @Bean
     public ConcurrentKafkaListenerContainerFactory<String, String> kafkaListenerContainerFactory(
-            ConsumerFactory<String, String> consumerFactory
+            ConsumerFactory<String, String> consumerFactory,
+            DefaultErrorHandler kafkaErrorHandler
     ) {
         ConcurrentKafkaListenerContainerFactory<String, String> factory = new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
+        factory.setCommonErrorHandler(kafkaErrorHandler);
         return factory;
     }
 }

@@ -3,16 +3,23 @@ package com.sublite.notification;
 import com.sublite.notification.domain.Notification;
 import com.sublite.notification.infrastructure.NotificationRepository;
 import com.sublite.notification.infrastructure.SubscriptionProjectionRepository;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.TestPropertySource;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
@@ -34,6 +41,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * wiring and JSON parsing are genuinely exercised, not just the service
  * layer underneath them.
  */
+@TestPropertySource(properties = {
+        "sublite.kafka.retry.max-attempts=2",
+        "sublite.kafka.retry.initial-interval-ms=50",
+        "sublite.kafka.retry.multiplier=1.0",
+        "sublite.kafka.retry.max-interval-ms=50"
+})
 @SpringBootTest
 @Testcontainers
 class NotificationConsumptionIT {
@@ -54,6 +67,46 @@ class NotificationConsumptionIT {
     private NotificationRepository notifications;
     @Autowired
     private SubscriptionProjectionRepository projections;
+
+    private KafkaConsumer<String, String> consumer;
+
+    @AfterEach
+    void closeConsumer() {
+        if (consumer != null) {
+            consumer.close();
+        }
+    }
+
+    @Test
+    void malformedMessageGoesStraightToDlqWithoutRetrying() throws Exception {
+        UUID key = UUID.randomUUID();
+        publish("subscription.events", key, "this is not JSON at all");
+
+        ConsumerRecord<String, String> dlqRecord = consumeRecordWithKey("subscription.events.DLQ", key.toString());
+        assertThat(dlqRecord.value()).isEqualTo("this is not JSON at all");
+    }
+
+    private ConsumerRecord<String, String> consumeRecordWithKey(String topic, String expectedKey) {
+        Properties props = new Properties();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, "test-" + UUID.randomUUID());
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        consumer = new KafkaConsumer<>(props);
+        consumer.subscribe(List.of(topic));
+
+        long deadline = System.currentTimeMillis() + Duration.ofSeconds(10).toMillis();
+        while (System.currentTimeMillis() < deadline) {
+            ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(500));
+            for (ConsumerRecord<String, String> record : records) {
+                if (expectedKey.equals(record.key())) {
+                    return record;
+                }
+            }
+        }
+        throw new AssertionError("No record with key " + expectedKey + " received on topic " + topic + " within 10s");
+    }
 
     @Test
     void subscriptionCreatedThenPaymentSucceededProduceTwoLinkedNotifications() throws Exception {

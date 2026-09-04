@@ -5,10 +5,16 @@ import com.sublite.subscription.domain.SubscriptionStatus;
 import com.sublite.subscription.infrastructure.ProcessedMessageRepository;
 import com.sublite.subscription.infrastructure.SubscriptionRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -26,6 +32,7 @@ import org.testcontainers.utility.DockerImageName;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Properties;
 import java.util.UUID;
 
@@ -41,7 +48,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * its JSON parsing, and PaymentOutcomeService are all genuinely exercised -
  * not just Subscription.activate()/enterGracePeriod() directly.
  */
-@TestPropertySource(properties = "sublite.outbox.poll-interval-ms=3600000")
+@TestPropertySource(properties = {
+        "sublite.outbox.poll-interval-ms=3600000",
+        "sublite.kafka.retry.max-attempts=2",
+        "sublite.kafka.retry.initial-interval-ms=50",
+        "sublite.kafka.retry.multiplier=1.0",
+        "sublite.kafka.retry.max-interval-ms=50"
+})
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
 @Testcontainers
@@ -69,6 +82,53 @@ class BillingEventConsumptionIT {
     private SubscriptionRepository subscriptions;
     @Autowired
     private ProcessedMessageRepository processedMessages;
+
+    private KafkaConsumer<String, String> consumer;
+
+    @AfterEach
+    void closeConsumer() {
+        if (consumer != null) {
+            consumer.close();
+        }
+    }
+
+    @Test
+    void malformedMessageGoesStraightToDlqWithoutRetrying() throws Exception {
+        String key = UUID.randomUUID().toString();
+        Properties props = new Properties();
+        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
+        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        try (KafkaProducer<String, String> producer = new KafkaProducer<>(props)) {
+            producer.send(new ProducerRecord<>("billing.events", key, "this is not JSON at all"))
+                    .get(10, java.util.concurrent.TimeUnit.SECONDS);
+        }
+
+        ConsumerRecord<String, String> dlqRecord = consumeRecordWithKey("billing.events.DLQ", key);
+        assertThat(dlqRecord.value()).isEqualTo("this is not JSON at all");
+    }
+
+    private ConsumerRecord<String, String> consumeRecordWithKey(String topic, String expectedKey) {
+        Properties props = new Properties();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, "test-" + UUID.randomUUID());
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        consumer = new KafkaConsumer<>(props);
+        consumer.subscribe(List.of(topic));
+
+        long deadline = System.currentTimeMillis() + Duration.ofSeconds(10).toMillis();
+        while (System.currentTimeMillis() < deadline) {
+            ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(500));
+            for (ConsumerRecord<String, String> record : records) {
+                if (expectedKey.equals(record.key())) {
+                    return record;
+                }
+            }
+        }
+        throw new AssertionError("No record with key " + expectedKey + " received on topic " + topic + " within 10s");
+    }
 
     @Test
     void aPaymentSucceededEventActivatesTheSubscription() throws Exception {

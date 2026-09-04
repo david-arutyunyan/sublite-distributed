@@ -80,14 +80,36 @@ docker exec sublite-kafka /opt/kafka/bin/kafka-console-consumer.sh \
 curl http://localhost:8083/notifications/11111111-2222-3333-4444-555555555555
 ```
 
+Retry + DLQ: битое сообщение (не JSON, битый UUID, отсутствует поле) уходит
+в `<topic>.DLQ` сразу; временный сбой (БД недоступна, платёжный шлюз бросил
+исключение) — после нескольких попыток с экспоненциальным backoff. Живая
+проверка:
+
+```bash
+docker exec -it sublite-kafka /opt/kafka/bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 --topic subscription.events \
+  --property "parse.key=true" --property "key.separator=:"
+# ввести: some-key:this is not JSON at all
+
+docker exec sublite-kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --topic subscription.events.DLQ \
+  --property print.key=true --from-beginning
+```
+
+Replay (ручной, по запросу — не автоцикл, см. `docs/architecture.md`):
+
+```bash
+curl -X POST http://localhost:8082/admin/dlq/subscription.events/replay
+```
+
 ## План
 
 1. ~~Границы сервисов и схема событий~~ — [docs/architecture.md](docs/architecture.md)
 2. ~~Kafka в Compose, топики~~
 3. ~~Transactional Outbox (поллер) в subscription-service~~
 4. ~~Вынос billing-service, консьюмер SubscriptionCreated~~
-5. ~~Идемпотентные консьюмеры (processed_messages), notification-service~~ — этот шаг
-6. DLQ + retry на реальных consumer'ах
+5. ~~Идемпотентные консьюмеры (processed_messages), notification-service~~
+6. ~~DLQ + retry + replay на реальных consumer'ах~~ — этот шаг
 7. Saga с компенсацией на сценарий отмены подписки
 8. Resilience4j: circuit breaker, retry, таймауты
 9-10. Prometheus, Grafana, OpenTelemetry, Jaeger

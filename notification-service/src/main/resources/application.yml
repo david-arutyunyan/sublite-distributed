@@ -25,3 +25,11 @@ management:
 logging:
   pattern:
     console: "%d{HH:mm:ss.SSS} %-5level [%X{correlationId:-no-correlation-id}] %logger{36} - %msg%n"
+
+sublite:
+  kafka:
+    retry:
+      max-attempts: 4
+      initial-interval-ms: 500
+      multiplier: 2.0
+      max-interval-ms: 5000

@@ -42,4 +42,25 @@ public class KafkaProducerConfig {
     public KafkaTemplate<String, EventEnvelope> kafkaTemplate(ProducerFactory<String, EventEnvelope> producerFactory) {
         return new KafkaTemplate<>(producerFactory);
     }
+
+    /**
+     * A second, separate producer for the DLQ/replay path - raw String,
+     * not EventEnvelope. Both the DeadLetterPublishingRecoverer (in
+     * KafkaConsumerConfig) and DlqReplayService need to hand a message
+     * back to Kafka byte-for-byte, exactly as it arrived - re-encoding it
+     * as an EventEnvelope would require successfully parsing it first,
+     * which is exactly what a poison-pill message can't do.
+     */
+    @Bean
+    public ProducerFactory<String, String> dlqProducerFactory() {
+        Map<String, Object> props = new HashMap<>();
+        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
+        return new DefaultKafkaProducerFactory<>(props, new StringSerializer(), new StringSerializer());
+    }
+
+    @Bean
+    public KafkaTemplate<String, String> dlqKafkaTemplate(ProducerFactory<String, String> dlqProducerFactory) {
+        return new KafkaTemplate<>(dlqProducerFactory);
+    }
 }

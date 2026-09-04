@@ -61,4 +61,22 @@ public class KafkaProducerConfig {
     public KafkaTemplate<String, EventEnvelope> kafkaTemplate(ProducerFactory<String, EventEnvelope> producerFactory) {
         return new KafkaTemplate<>(producerFactory);
     }
+
+    /**
+     * A second, separate producer for the DLQ/replay path - see
+     * billing-service's own KafkaProducerConfig javadoc for why this
+     * needs to be raw String rather than reusing the EventEnvelope one.
+     */
+    @Bean
+    public ProducerFactory<String, String> dlqProducerFactory() {
+        Map<String, Object> props = new HashMap<>();
+        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
+        return new DefaultKafkaProducerFactory<>(props, new StringSerializer(), new StringSerializer());
+    }
+
+    @Bean
+    public KafkaTemplate<String, String> dlqKafkaTemplate(ProducerFactory<String, String> dlqProducerFactory) {
+        return new KafkaTemplate<>(dlqProducerFactory);
+    }
 }
