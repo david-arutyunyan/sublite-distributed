@@ -1,0 +1,80 @@
+services:
+  # KRaft mode - no ZooKeeper. A single container plays both roles
+  # (broker + controller) via KAFKA_PROCESS_ROLES; a real cluster would
+  # split these onto separate nodes for isolation, but for one broker
+  # locally there's nothing to gain from running two containers.
+  #
+  # Three listener names, three jobs:
+  #   PLAINTEXT      - how other containers on this compose network
+  #                    reach the broker (kafka:19092) - this is what
+  #                    every service's bootstrap-servers will point at.
+  #   CONTROLLER     - KRaft's own internal quorum traffic (leader
+  #                    election, metadata log) - never used by clients.
+  #   PLAINTEXT_HOST - published to the host (localhost:9092) so
+  #                    kafka-topics.sh, a local IDE, or Kafka UI can
+  #                    reach the broker from outside Docker.
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: sublite-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://kafka:19092,CONTROLLER://kafka:19093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:19093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # A single-broker cluster can't satisfy a replication factor above
+      # 1 for anything - these three internal topics default to 3,
+      # which would leave the broker stuck complaining it can't find
+      # enough nodes to replicate to.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # KRaft clusters need a cluster ID baked into storage at first
+      # boot (kafka-storage.sh format) - fixed here rather than
+      # generated fresh each time so a `docker compose down` (without
+      # -v) and back `up` reconnects to the same on-disk metadata
+      # instead of drifting. Any valid 22-char base64 UUID works; this
+      # one's arbitrary.
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 20s
+
+  # One-shot: creates every topic from docs/architecture.md and exits.
+  # --if-not-exists makes this safe to run on every `docker compose up`,
+  # not just the first one.
+  kafka-init:
+    image: apache/kafka:3.8.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./kafka/create-topics.sh:/create-topics.sh:ro
+    entrypoint: ["bash", "/create-topics.sh"]
+
+  # Not required by the architecture - a debugging aid. Browsing topics/
+  # partitions/consumer groups/messages through a UI is a lot faster
+  # than kafka-console-consumer.sh while still learning the broker.
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: sublite
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+volumes:
+  kafka_data:

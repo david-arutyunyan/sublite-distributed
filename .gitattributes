@@ -1,0 +1,5 @@
+# Shell scripts get bind-mounted straight into Linux containers (see
+# kafka/create-topics.sh) - a CRLF shebang line there is a "No such file
+# or directory" error, not a cosmetic issue. Force LF regardless of this
+# machine's core.autocrlf.
+*.sh text eol=lf
