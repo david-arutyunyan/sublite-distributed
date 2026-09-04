@@ -7,6 +7,7 @@ import com.sublite.billing.domain.ChargeResult;
 import com.sublite.billing.domain.Money;
 import com.sublite.billing.domain.PaymentGateway;
 import com.sublite.billing.infrastructure.InvoiceRepository;
+import com.sublite.billing.infrastructure.ProcessedMessageRepository;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -75,6 +76,8 @@ class SubscriptionEventChargingIT {
     private OutboxPoller outboxPoller;
     @Autowired
     private InvoiceRepository invoices;
+    @Autowired
+    private ProcessedMessageRepository processedMessages;
 
     @MockitoBean
     private PaymentGateway paymentGateway;
@@ -133,7 +136,36 @@ class SubscriptionEventChargingIT {
         assertThat(envelope.get("payload").get("reason").asText()).isEqualTo("INSUFFICIENT_FUNDS");
     }
 
+    @Test
+    void redeliveringTheSameEventIdDoesNotChargeTwice() throws Exception {
+        when(paymentGateway.charge(any())).thenReturn(new ChargeResult.Success("ref-redelivery"));
+        UUID subscriptionId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+
+        // Same eventId, published twice - simulates the message being
+        // redelivered (a rebalance or a consumer restart before the
+        // offset committed), not two different SubscriptionCreated
+        // events for the same subscription.
+        publishSubscriptionCreated(eventId, subscriptionId, CUSTOMER_ID, "9.99", "USD", UUID.randomUUID());
+        awaitInvoiceFor(subscriptionId);
+        publishSubscriptionCreated(eventId, subscriptionId, CUSTOMER_ID, "9.99", "USD", UUID.randomUUID());
+
+        // Give the second delivery a moment to actually reach the
+        // listener before asserting its absence - otherwise this could
+        // pass for the wrong reason (too fast to have been processed
+        // yet, not because it was deduped).
+        Thread.sleep(2000);
+
+        assertThat(invoices.findBySubscriptionId(subscriptionId)).hasSize(1);
+        assertThat(processedMessages.findById(eventId)).isPresent();
+    }
+
     private void publishSubscriptionCreated(UUID subscriptionId, UUID customerId, String amount, String currency, UUID correlationId)
+            throws Exception {
+        publishSubscriptionCreated(UUID.randomUUID(), subscriptionId, customerId, amount, currency, correlationId);
+    }
+
+    private void publishSubscriptionCreated(UUID eventId, UUID subscriptionId, UUID customerId, String amount, String currency, UUID correlationId)
             throws Exception {
         String envelope = """
                 {
@@ -150,7 +182,7 @@ class SubscriptionEventChargingIT {
                   }
                 }
                 """.formatted(
-                UUID.randomUUID(), subscriptionId, Instant.now(), correlationId,
+                eventId, subscriptionId, Instant.now(), correlationId,
                 subscriptionId, customerId, amount, currency
         );
 

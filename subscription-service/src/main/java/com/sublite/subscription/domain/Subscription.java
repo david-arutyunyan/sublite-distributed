@@ -56,15 +56,14 @@ public class Subscription {
 
     /**
      * The only two transitions this class supports right now - both
-     * guarded to fire only from PENDING_PAYMENT, which is what makes
-     * this safe against a redelivered PaymentSucceeded/PaymentFailed
-     * event: applying either one again once the subscription has
-     * already left PENDING_PAYMENT is a silent no-op instead of
-     * corrupting a later state (e.g. re-activating a since-cancelled
-     * subscription). A narrower, state-shape guard than the eventId-
-     * keyed dedup table coming in step 5-6 - not a replacement for it,
-     * just enough to be correct for the one redelivery scenario that
-     * actually exists in this system so far.
+     * guarded to fire only from PENDING_PAYMENT. The primary redelivery
+     * guard as of step 5-6 is PaymentOutcomeService's eventId-keyed
+     * processed_messages check; this state guard is a second, narrower
+     * layer underneath it - catches a broader class of "this shouldn't
+     * happen" (e.g. two different events somehow both trying to move
+     * the same subscription out of PENDING_PAYMENT) by making the
+     * transition itself a no-op outside the one state it's valid from,
+     * not just outside the one eventId it's valid for.
      */
     public void activate() {
         if (status == SubscriptionStatus.PENDING_PAYMENT) {

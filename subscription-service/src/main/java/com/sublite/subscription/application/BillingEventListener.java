@@ -43,13 +43,14 @@ public class BillingEventListener {
 
         MDC.put(CORRELATION_ID_MDC_KEY, correlationId);
         try {
+            UUID eventId = UUID.fromString(envelope.get("eventId").asText());
             JsonNode payload = envelope.get("payload");
             UUID subscriptionId = UUID.fromString(payload.get("subscriptionId").asText());
 
             switch (eventType) {
-                case "PaymentSucceeded" -> paymentOutcomeService.handlePaymentSucceeded(subscriptionId);
+                case "PaymentSucceeded" -> paymentOutcomeService.handlePaymentSucceeded(eventId, subscriptionId);
                 case "PaymentFailed" -> paymentOutcomeService.handlePaymentFailed(
-                        subscriptionId, payload.get("reason").asText());
+                        eventId, subscriptionId, payload.get("reason").asText());
                 default -> log.debug("Ignoring event type not handled by subscription-service: {}", eventType);
             }
         } finally {

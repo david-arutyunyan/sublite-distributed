@@ -62,12 +62,13 @@ public class SubscriptionEventListener {
                 return;
             }
 
+            UUID eventId = UUID.fromString(envelope.get("eventId").asText());
             JsonNode payload = envelope.get("payload");
             UUID subscriptionId = UUID.fromString(payload.get("subscriptionId").asText());
             BigDecimal amount = payload.get("amount").decimalValue();
             String currency = payload.get("currency").asText();
 
-            chargeService.chargeNewSubscription(subscriptionId, amount, currency, UUID.fromString(correlationId));
+            chargeService.chargeNewSubscription(eventId, subscriptionId, amount, currency, UUID.fromString(correlationId));
         } finally {
             MDC.remove(CORRELATION_ID_MDC_KEY);
         }

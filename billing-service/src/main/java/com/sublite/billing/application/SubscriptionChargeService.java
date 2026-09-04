@@ -7,9 +7,11 @@ import com.sublite.billing.domain.OutboxEvent;
 import com.sublite.billing.domain.PaymentAttempt;
 import com.sublite.billing.domain.PaymentAttemptStatus;
 import com.sublite.billing.domain.PaymentGateway;
+import com.sublite.billing.domain.ProcessedMessage;
 import com.sublite.billing.infrastructure.InvoiceRepository;
 import com.sublite.billing.infrastructure.OutboxEventRepository;
 import com.sublite.billing.infrastructure.PaymentAttemptRepository;
+import com.sublite.billing.infrastructure.ProcessedMessageRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -43,6 +45,7 @@ public class SubscriptionChargeService {
     private final InvoiceRepository invoices;
     private final PaymentAttemptRepository paymentAttempts;
     private final OutboxEventRepository outbox;
+    private final ProcessedMessageRepository processedMessages;
     private final PaymentGateway gateway;
     private final Clock clock;
 
@@ -50,23 +53,26 @@ public class SubscriptionChargeService {
             InvoiceRepository invoices,
             PaymentAttemptRepository paymentAttempts,
             OutboxEventRepository outbox,
+            ProcessedMessageRepository processedMessages,
             PaymentGateway gateway,
             Clock clock
     ) {
         this.invoices = invoices;
         this.paymentAttempts = paymentAttempts;
         this.outbox = outbox;
+        this.processedMessages = processedMessages;
         this.gateway = gateway;
         this.clock = clock;
     }
 
     @Transactional
-    public void chargeNewSubscription(UUID subscriptionId, BigDecimal amount, String currency, UUID correlationId) {
-        // Partial, deliberately-incomplete redelivery guard - see
-        // InvoiceRepository.findBySubscriptionId()'s own javadoc for why
-        // this isn't the real fix (that's step 5-6, keyed by eventId).
-        if (!invoices.findBySubscriptionId(subscriptionId).isEmpty()) {
-            log.warn("Subscription {} already has an invoice - skipping, likely a redelivered SubscriptionCreated", subscriptionId);
+    public void chargeNewSubscription(UUID eventId, UUID subscriptionId, BigDecimal amount, String currency, UUID correlationId) {
+        // The real dedup mechanism (see ProcessedMessage's javadoc) -
+        // replaces the InvoiceRepository-based guard this method used
+        // through step 4. Checking and recording both happen in this
+        // same transaction as the charge itself, further down.
+        if (processedMessages.existsById(eventId)) {
+            log.info("Skipping already-processed event: eventId={}, subscriptionId={}", eventId, subscriptionId);
             return;
         }
 
@@ -92,6 +98,7 @@ public class SubscriptionChargeService {
                 correlationId,
                 now
         ));
+        processedMessages.save(new ProcessedMessage(eventId, now));
 
         log.info("Charge attempted: subscriptionId={}, invoiceId={}, outcome={}, correlationId={}",
                 subscriptionId, invoice.getId(), attempt.getStatus(), correlationId);

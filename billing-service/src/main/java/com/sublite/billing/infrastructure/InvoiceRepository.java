@@ -8,12 +8,9 @@ import java.util.UUID;
 
 public interface InvoiceRepository extends JpaRepository<Invoice, UUID> {
 
-    // Cheap partial guard against the redelivery gap called out in
-    // BillingEventListener: not a real dedup mechanism (that's step 5-6,
-    // keyed by eventId) - just good enough to stop this step's one and
-    // only event type (SubscriptionCreated) from creating two invoices
-    // for the same subscription if it's redelivered before then. Would
-    // stop being valid the moment recurring renewal events exist, since
-    // multiple invoices per subscription becomes normal at that point.
+    // No longer a redelivery guard as of step 5-6 - that's
+    // ProcessedMessageRepository's job now. Kept for lookups (tests,
+    // and eventually a "billing history for this subscription" read
+    // path).
     List<Invoice> findBySubscriptionId(UUID subscriptionId);
 }

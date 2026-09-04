@@ -2,6 +2,7 @@ package com.sublite.subscription;
 
 import com.sublite.subscription.api.dto.PurchaseSubscriptionRequest;
 import com.sublite.subscription.domain.SubscriptionStatus;
+import com.sublite.subscription.infrastructure.ProcessedMessageRepository;
 import com.sublite.subscription.infrastructure.SubscriptionRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -66,6 +67,8 @@ class BillingEventConsumptionIT {
     private ObjectMapper objectMapper;
     @Autowired
     private SubscriptionRepository subscriptions;
+    @Autowired
+    private ProcessedMessageRepository processedMessages;
 
     @Test
     void aPaymentSucceededEventActivatesTheSubscription() throws Exception {
@@ -100,6 +103,34 @@ class BillingEventConsumptionIT {
         awaitStatus(subscriptionId, SubscriptionStatus.GRACE_PERIOD);
     }
 
+    @Test
+    void redeliveringTheSamePaymentSucceededEventIsANoOp() throws Exception {
+        UUID subscriptionId = purchaseSubscription();
+        UUID eventId = UUID.randomUUID();
+        String payload = """
+                {
+                  "subscriptionId": "%s",
+                  "invoiceId": "%s",
+                  "amount": 9.99,
+                  "currency": "USD"
+                }
+                """.formatted(subscriptionId, UUID.randomUUID());
+
+        publishBillingEvent(eventId, subscriptionId, "PaymentSucceeded", payload);
+        awaitStatus(subscriptionId, SubscriptionStatus.ACTIVE);
+
+        // Redelivery of the SAME eventId - if dedup weren't in place this
+        // would still just be a no-op today (activate() only fires from
+        // PENDING_PAYMENT), so the real proof this test needs is the
+        // processed_messages row, not just the status staying ACTIVE.
+        publishBillingEvent(eventId, subscriptionId, "PaymentSucceeded", payload);
+        Thread.sleep(2000);
+
+        assertThat(subscriptions.findById(subscriptionId).orElseThrow().getStatus())
+                .isEqualTo(SubscriptionStatus.ACTIVE);
+        assertThat(processedMessages.findById(eventId)).isPresent();
+    }
+
     private UUID purchaseSubscription() throws Exception {
         UUID customerId = UUID.randomUUID();
         String body = mockMvc.perform(post("/subscriptions")
@@ -111,6 +142,10 @@ class BillingEventConsumptionIT {
     }
 
     private void publishBillingEvent(UUID subscriptionId, String eventType, String payloadJson) throws Exception {
+        publishBillingEvent(UUID.randomUUID(), subscriptionId, eventType, payloadJson);
+    }
+
+    private void publishBillingEvent(UUID eventId, UUID subscriptionId, String eventType, String payloadJson) throws Exception {
         String envelope = """
                 {
                   "eventId": "%s",
@@ -120,7 +155,7 @@ class BillingEventConsumptionIT {
                   "correlationId": "%s",
                   "payload": %s
                 }
-                """.formatted(UUID.randomUUID(), eventType, subscriptionId, Instant.now(), UUID.randomUUID(), payloadJson);
+                """.formatted(eventId, eventType, subscriptionId, Instant.now(), UUID.randomUUID(), payloadJson);
 
         Properties props = new Properties();
         props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
