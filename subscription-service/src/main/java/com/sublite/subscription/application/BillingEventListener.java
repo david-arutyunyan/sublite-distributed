@@ -16,9 +16,9 @@ import java.util.UUID;
  * - independent of billing-service's "billing-service" group on the same
  * topic, so each service gets the full billing.events stream.
  *
- * billing.events carries more than just payment outcomes over time; this
- * listener only acts on PaymentSucceeded/PaymentFailed and quietly ignores
- * anything else, same forward-compatibility reasoning as its billing-side
+ * billing.events carries more event types than the four handled below
+ * (see the catalog in docs/architecture.md) - anything else is quietly
+ * ignored, same forward-compatibility reasoning as its billing-side
  * counterpart.
  */
 @Component
@@ -28,10 +28,16 @@ public class BillingEventListener {
     private static final String CORRELATION_ID_MDC_KEY = "correlationId";
 
     private final PaymentOutcomeService paymentOutcomeService;
+    private final CancellationService cancellationService;
     private final ObjectMapper objectMapper;
 
-    public BillingEventListener(PaymentOutcomeService paymentOutcomeService, ObjectMapper objectMapper) {
+    public BillingEventListener(
+            PaymentOutcomeService paymentOutcomeService,
+            CancellationService cancellationService,
+            ObjectMapper objectMapper
+    ) {
         this.paymentOutcomeService = paymentOutcomeService;
+        this.cancellationService = cancellationService;
         this.objectMapper = objectMapper;
     }
 
@@ -44,6 +50,7 @@ public class BillingEventListener {
         MDC.put(CORRELATION_ID_MDC_KEY, correlationId);
         try {
             UUID eventId = UUID.fromString(envelope.get("eventId").asText());
+            UUID correlationUuid = UUID.fromString(correlationId);
             JsonNode payload = envelope.get("payload");
             UUID subscriptionId = UUID.fromString(payload.get("subscriptionId").asText());
 
@@ -51,6 +58,13 @@ public class BillingEventListener {
                 case "PaymentSucceeded" -> paymentOutcomeService.handlePaymentSucceeded(eventId, subscriptionId);
                 case "PaymentFailed" -> paymentOutcomeService.handlePaymentFailed(
                         eventId, subscriptionId, payload.get("reason").asText());
+                // The cancellation saga's other half - see CancellationService's
+                // javadoc. RefundFailed drives the COMPENSATING transaction
+                // (abortCancellation(), reverting back to ACTIVE), not just
+                // another forward step.
+                case "RefundIssued" -> cancellationService.confirmCancellation(eventId, subscriptionId, correlationUuid);
+                case "RefundFailed" -> cancellationService.abortCancellation(
+                        eventId, subscriptionId, payload.get("reason").asText(), correlationUuid);
                 default -> log.debug("Ignoring event type not handled by subscription-service: {}", eventType);
             }
         } finally {

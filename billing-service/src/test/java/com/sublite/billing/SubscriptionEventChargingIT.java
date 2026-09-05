@@ -9,6 +9,7 @@ import com.sublite.billing.domain.Money;
 import com.sublite.billing.domain.PaymentGateway;
 import com.sublite.billing.infrastructure.InvoiceRepository;
 import com.sublite.billing.infrastructure.ProcessedMessageRepository;
+import com.sublite.billing.infrastructure.RefundRepository;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -93,6 +94,8 @@ class SubscriptionEventChargingIT {
     private ProcessedMessageRepository processedMessages;
     @Autowired
     private DlqReplayService dlqReplayService;
+    @Autowired
+    private RefundRepository refunds;
 
     @MockitoBean
     private PaymentGateway paymentGateway;
@@ -232,6 +235,80 @@ class SubscriptionEventChargingIT {
         assertThat(invoices.findBySubscriptionId(subscriptionId))
                 .singleElement()
                 .satisfies(invoice -> assertThat(invoice.getStatus().name()).isEqualTo("PAID"));
+    }
+
+    @Test
+    void aSuccessfulRefundPublishesRefundIssued() throws Exception {
+        when(paymentGateway.refund(any())).thenReturn(new ChargeResult.Success("refund-ref-1"));
+        UUID subscriptionId = UUID.randomUUID();
+        UUID correlationId = UUID.randomUUID();
+
+        publishSubscriptionCancellationRequested(subscriptionId, "9.99", "USD", correlationId);
+
+        awaitRefundFor(subscriptionId);
+        assertThat(refunds.findBySubscriptionId(subscriptionId))
+                .singleElement()
+                .satisfies(refund -> assertThat(refund.getStatus().name()).isEqualTo("ISSUED"));
+
+        outboxPoller.publishPending();
+        ConsumerRecord<String, String> record = consumeRecordWithKey("billing.events", subscriptionId.toString());
+        JsonNode envelope = objectMapper.readTree(record.value());
+        assertThat(envelope.get("eventType").asText()).isEqualTo("RefundIssued");
+        assertThat(envelope.get("correlationId").asText()).isEqualTo(correlationId.toString());
+    }
+
+    @Test
+    void aDeclinedRefundPublishesRefundFailedWithTheReason() throws Exception {
+        when(paymentGateway.refund(any())).thenReturn(new ChargeResult.Declined("REFUND_PROVIDER_ERROR"));
+        UUID subscriptionId = UUID.randomUUID();
+
+        publishSubscriptionCancellationRequested(subscriptionId, "9.99", "USD", UUID.randomUUID());
+
+        awaitRefundFor(subscriptionId);
+        outboxPoller.publishPending();
+
+        ConsumerRecord<String, String> record = consumeRecordWithKey("billing.events", subscriptionId.toString());
+        JsonNode envelope = objectMapper.readTree(record.value());
+        assertThat(envelope.get("eventType").asText()).isEqualTo("RefundFailed");
+        assertThat(envelope.get("payload").get("reason").asText()).isEqualTo("REFUND_PROVIDER_ERROR");
+    }
+
+    private void publishSubscriptionCancellationRequested(UUID subscriptionId, String amount, String currency, UUID correlationId)
+            throws Exception {
+        String envelope = """
+                {
+                  "eventId": "%s",
+                  "eventType": "SubscriptionCancellationRequested",
+                  "aggregateId": "%s",
+                  "occurredAt": "%s",
+                  "correlationId": "%s",
+                  "payload": {
+                    "subscriptionId": "%s",
+                    "customerId": "%s",
+                    "amount": %s,
+                    "currency": "%s"
+                  }
+                }
+                """.formatted(UUID.randomUUID(), subscriptionId, Instant.now(), correlationId, subscriptionId, CUSTOMER_ID, amount, currency);
+
+        Properties props = new Properties();
+        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
+        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        try (KafkaProducer<String, String> producer = new KafkaProducer<>(props)) {
+            producer.send(new ProducerRecord<>("subscription.events", subscriptionId.toString(), envelope)).get(10, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    private void awaitRefundFor(UUID subscriptionId) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + Duration.ofSeconds(15).toMillis();
+        while (System.currentTimeMillis() < deadline) {
+            if (!refunds.findBySubscriptionId(subscriptionId).isEmpty()) {
+                return;
+            }
+            Thread.sleep(200);
+        }
+        throw new AssertionError("No refund appeared for subscription " + subscriptionId + " within 15s");
     }
 
     private void publishRaw(String topic, String key, String value) throws Exception {

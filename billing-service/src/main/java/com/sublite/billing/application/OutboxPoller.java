@@ -26,6 +26,7 @@ public class OutboxPoller {
     private static final Logger log = LoggerFactory.getLogger(OutboxPoller.class);
     private static final int BATCH_SIZE = 50;
     private static final String INVOICE_AGGREGATE = "Invoice";
+    private static final String REFUND_AGGREGATE = "Refund";
 
     private final OutboxEventRepository outbox;
     private final KafkaTemplate<String, EventEnvelope> kafka;
@@ -69,7 +70,10 @@ public class OutboxPoller {
     }
 
     private static String topicFor(String aggregateType) {
-        if (INVOICE_AGGREGATE.equals(aggregateType)) {
+        // Both map to the same topic - a topic belongs to the PUBLISHING
+        // domain (billing-service), not to any one aggregate type within
+        // it (docs/architecture.md's topic-naming rule).
+        if (INVOICE_AGGREGATE.equals(aggregateType) || REFUND_AGGREGATE.equals(aggregateType)) {
             return "billing.events";
         }
         throw new IllegalStateException("No topic mapping for aggregate type: " + aggregateType);

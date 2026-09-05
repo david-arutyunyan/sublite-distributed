@@ -21,8 +21,22 @@ public class RandomPaymentGateway implements PaymentGateway {
 
     @Override
     public ChargeResult charge(Money amount) {
+        return outcome("INSUFFICIENT_FUNDS");
+    }
+
+    @Override
+    public ChargeResult refund(Money amount) {
+        // A different decline reason than charge()'s - "insufficient
+        // funds" doesn't make sense for a refund. Same DECLINE_RATE,
+        // a real provider would likely have a different failure profile
+        // for refunds vs. charges, but a second knob here would be
+        // tuning a fake for realism it doesn't need.
+        return outcome("REFUND_PROVIDER_ERROR");
+    }
+
+    private static ChargeResult outcome(String declineReason) {
         if (ThreadLocalRandom.current().nextDouble() < DECLINE_RATE) {
-            return new ChargeResult.Declined("INSUFFICIENT_FUNDS");
+            return new ChargeResult.Declined(declineReason);
         }
         return new ChargeResult.Success(java.util.UUID.randomUUID().toString());
     }

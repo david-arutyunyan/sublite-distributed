@@ -74,7 +74,9 @@ subscription-service знает, когда подписка "созрела" д
 | `subscription.events` | SubscriptionCreated | subscriptionId | subscription-service | billing-service, notification-service |
 | | SubscriptionRenewalDue | subscriptionId | subscription-service | billing-service |
 | | SubscriptionRenewed | subscriptionId | subscription-service | notification-service |
-| | SubscriptionCancelled | subscriptionId | subscription-service | billing-service, notification-service, analytics-service |
+| | SubscriptionCancellationRequested | subscriptionId | subscription-service | billing-service |
+| | SubscriptionCancelled | subscriptionId | subscription-service | notification-service, analytics-service |
+| | SubscriptionCancellationFailed | subscriptionId | subscription-service | notification-service |
 | | SubscriptionPaused | subscriptionId | subscription-service | billing-service |
 | `retention.events` | CancellationStarted | subscriptionId | subscription-service | analytics-service |
 | | RetentionOfferShown | subscriptionId | subscription-service | analytics-service |
@@ -83,18 +85,32 @@ subscription-service знает, когда подписка "созрела" д
 | | SubscriptionRetained | subscriptionId | subscription-service | notification-service, analytics-service |
 | `billing.events` | PaymentSucceeded | subscriptionId | billing-service | subscription-service, notification-service |
 | | PaymentFailed | subscriptionId | billing-service | subscription-service, notification-service |
-| | RefundIssued / RefundFailed | subscriptionId | billing-service | subscription-service, notification-service |
+| | RefundIssued / RefundFailed | subscriptionId | billing-service | subscription-service |
 | `loyalty.events` | LoyaltyPointsAwarded / AwardFailed | **customerId** | subscription-service (loyalty-модуль) | notification-service |
 | `notification.events` | NotificationSent / NotificationFailed | customerId | notification-service | (саге/DLQ-наблюдаемость) |
 
 Каждый топик из этой таблицы имеет DLQ-двойник (`<topic>.DLQ`) — созданы
 заранее в `kafka/create-topics.sh`, retry+DLQ на реальных consumer'ах —
-шаг 6, сделано (см. раздел ниже).
+шаг 6, сделано.
 
-На сегодня в коде реализовано и реально публикуется только три события:
-`SubscriptionCreated`, `PaymentSucceeded`, `PaymentFailed` — остальные
-строки таблицы фиксируют целевую форму системы (нужны для saga на шаге 7),
-но самих publisher'ов для них пока нет.
+На сегодня в коде реализовано и реально публикуется семь событий:
+`SubscriptionCreated`, `PaymentSucceeded`, `PaymentFailed` (шаг 3-4),
+`SubscriptionCancellationRequested`, `SubscriptionCancelled`,
+`SubscriptionCancellationFailed`, `RefundIssued`/`RefundFailed` (шаг 7,
+сага отмены — раздел ниже). Остальные строки таблицы фиксируют целевую
+форму системы, но publisher'ов для них пока нет.
+
+`SubscriptionCancelled` в этой таблице — переосмысление того, что было
+записано на шаге 1: тогда его consumer'ом числился и billing-service, что
+имело смысл только пока не было ясно, ЧТО именно должно триггерить возврат
+денег. При реальном проектировании саги (шаг 7) стало очевидно: событие с
+именем "уже отменено" не может быть тем, что ЗАПУСКАЕТ попытку возврата —
+это факт о завершившемся исходе, а не команда попробовать. Отсюда
+`SubscriptionCancellationRequested` — то, что реально стартует сагу и то,
+что слушает billing-service; `SubscriptionCancelled` теперь публикуется
+ТОЛЬКО когда возврат подтверждён, то есть уже после того как всё удалось.
+Ранняя схема была наброском, а не контрактом, который нельзя менять —
+нормальная часть проектирования, а не ошибка, которую стоит прятать.
 
 ## Ключ сообщения
 
@@ -234,6 +250,70 @@ end-offset'ов топика ДО чтения, а не "читаем пока �
 проверке этого шага — один намеренно "ядовитый" месседж превратился в
 сотни записей в DLQ за секунды, прежде чем это было замечено и
 пофикшено снимком офсетов.
+
+## Saga: отмена подписки (шаг 7, сделано)
+
+Хореография, не оркестрация — нет центрального координатора саги, каждый
+сервис реагирует на события и публикует свои. С РЕАЛЬНОЙ компенсирующей
+транзакцией, не просто цепочкой событий в одну сторону:
+
+```
+POST /subscriptions/{id}/cancel
+  subscription-service: ACTIVE -> CANCEL_PENDING
+  публикует SubscriptionCancellationRequested
+      |
+      v
+billing-service слушает, пробует вернуть деньги через PaymentGateway.refund()
+  публикует RefundIssued ИЛИ RefundFailed
+      |
+      v
+subscription-service слушает:
+  RefundIssued  -> CANCEL_PENDING -> CANCELLED (прямой путь завершён)
+  RefundFailed  -> CANCEL_PENDING -> ACTIVE    (КОМПЕНСАЦИЯ: откат)
+```
+
+`CANCEL_PENDING` — статус саги "в полёте", та же роль, что `PENDING_PAYMENT`
+у покупки: подписка сидит здесь между "клиент попросил отменить" и
+"billing-service подтвердил возврат". Возврат — по полной цене плана, без
+проценки по остатку периода — намеренное упрощение (математика проценки
+отвлекает от самого паттерна saga/компенсация, который здесь в фокусе).
+
+**Компенсация в деталях**: `requestCancellation()` — оптимистичный переход,
+сделанный ДО того как известно, получится ли возврат. Если billing-service
+отвечает `RefundFailed`, `abortCancellation()` откатывает ровно то, что
+сделал `requestCancellation()` — CANCEL_PENDING обратно в ACTIVE. Без этого
+подписка застряла бы в CANCEL_PENDING навсегда: не активна для клиента, но
+и не отменена по-настоящему (деньги не вернулись).
+
+**HTTP-триггер ведёт себя иначе, чем Kafka-триггер, и это осознанно**:
+`requestCancellation()` (вызывается синхронно из контроллера) БРОСАЕТ
+исключение при недопустимом переходе → 409 клиенту. `confirmCancellation()`
+и `abortCancellation()` (вызываются из Kafka-listener'а) молча не делают
+ничего в недопустимом состоянии — та же redelivery-safe форма, что у
+`activate()`/`enterGracePeriod()` с шага 4. HTTP-клиент должен увидеть
+ошибку на невалидный запрос; Kafka-consumer обязан пережить повторную
+доставку без ошибки.
+
+**Реальный баг, пойманный вживую, не тестами**: `confirmCancellation()`/
+`abortCancellation()` на сущности `Subscription` возвращали `void` —
+guard внутри них молча не менял состояние при недопустимом переходе, но
+слой сервиса (`CancellationService`) публиковал исходящее событие и писал
+"успех" в лог БЕЗУСЛОВНО, не проверяя, действительно ли переход произошёл.
+Поймано гонкой на живом стеке: вручную опубликованное `RefundFailed` и
+настоящий (более медленный, идёт через два цикла outbox-поллера) ответ
+billing-service пришли для одной саги с РАЗНЫМИ `eventId` — дедуп по
+`eventId` корректно пропустил оба (это не redelivery одного и того же
+сообщения, а два разных события), но БЕЗ проверки результата перехода
+второе сообщение всё равно опубликовало ВТОРОЙ `SubscriptionCancellationFailed`
+и залогировало вторую "компенсацию", хотя сущность на этот раз осталась
+без изменений (уже ACTIVE). Исправлено: `activate()`, `enterGracePeriod()`,
+`confirmCancellation()`, `abortCancellation()` теперь возвращают `boolean` —
+сервисный слой публикует событие и логирует успех, только если переход
+РЕАЛЬНО произошёл. Регрессия закрыта тестом
+(`aSecondConflictingRefundFailedDoesNotRepublishTheCompensation`) и
+повторно проверена на живом стеке — тот же сценарий гонки после фикса
+корректно логирует "Ignoring RefundFailed - subscription not in
+CANCEL_PENDING" вместо повторной компенсации.
 
 ## Грабли
 

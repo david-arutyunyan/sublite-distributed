@@ -13,8 +13,8 @@ Kubernetes-манифесты под kind, Prometheus/Grafana, OpenTelemetry/Jae
 
 | Сервис | Стек | Статус |
 |---|---|---|
-| subscription-service | Java 21, Spring Boot 4, Postgres | покупка + Outbox + идемпотентный консьюмер billing.events |
-| billing-service | Java 21, Spring Boot 4, Postgres | списание + Outbox + идемпотентный консьюмер subscription.events |
+| subscription-service | Java 21, Spring Boot 4, Postgres | покупка + отмена (saga) + Outbox + идемпотентный консьюмер billing.events |
+| billing-service | Java 21, Spring Boot 4, Postgres | списание + возврат (saga) + Outbox + идемпотентный консьюмер subscription.events |
 | notification-service | Java 21, Spring Boot 4, MongoDB | история уведомлений, идемпотентные консьюмеры обоих топиков |
 | analytics-service | Go, Postgres | не начат (опционально) |
 
@@ -102,6 +102,18 @@ Replay (ручной, по запросу — не автоцикл, см. `docs
 curl -X POST http://localhost:8082/admin/dlq/subscription.events/replay
 ```
 
+Отмена подписки — saga с реальной компенсацией (подробности и диаграмма
+потока в `docs/architecture.md`). Работает только для `ACTIVE` подписки:
+
+```bash
+curl -X POST http://localhost:8081/subscriptions/<id>/cancel
+```
+
+Асинхронно: `CANCEL_PENDING` → billing-service пробует вернуть деньги
+(`RandomPaymentGateway`, те же 20% деклайнов) → `CANCELLED` при успехе,
+либо КОМПЕНСАЦИЯ обратно в `ACTIVE` при неудачном возврате — подписка не
+остаётся отменённой, если деньги вернуть не удалось.
+
 ## План
 
 1. ~~Границы сервисов и схема событий~~ — [docs/architecture.md](docs/architecture.md)
@@ -109,8 +121,8 @@ curl -X POST http://localhost:8082/admin/dlq/subscription.events/replay
 3. ~~Transactional Outbox (поллер) в subscription-service~~
 4. ~~Вынос billing-service, консьюмер SubscriptionCreated~~
 5. ~~Идемпотентные консьюмеры (processed_messages), notification-service~~
-6. ~~DLQ + retry + replay на реальных consumer'ах~~ — этот шаг
-7. Saga с компенсацией на сценарий отмены подписки
+6. ~~DLQ + retry + replay на реальных consumer'ах~~
+7. ~~Saga с компенсацией на сценарий отмены подписки~~ — этот шаг
 8. Resilience4j: circuit breaker, retry, таймауты
 9-10. Prometheus, Grafana, OpenTelemetry, Jaeger
 11. Kubernetes-манифесты под kind

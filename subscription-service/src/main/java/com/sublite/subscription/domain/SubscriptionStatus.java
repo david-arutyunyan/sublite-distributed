@@ -15,5 +15,12 @@ public enum SubscriptionStatus {
     PENDING_PAYMENT,
     ACTIVE,
     GRACE_PERIOD,
+    // The cancellation saga's own in-flight state (step 7) - a
+    // subscription sits here between "customer asked to cancel" and
+    // "billing-service confirmed the refund", the same way
+    // PENDING_PAYMENT sits between purchase and the charge outcome.
+    // CANCEL_PENDING, not PENDING_CANCELLATION/CANCELLATION_PENDING -
+    // those are 21 chars, one over this column's VARCHAR(20).
+    CANCEL_PENDING,
     CANCELLED
 }

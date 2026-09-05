@@ -41,16 +41,28 @@ public class PaymentOutcomeService {
     @Transactional
     public void handlePaymentSucceeded(UUID eventId, UUID subscriptionId) {
         withDedup(eventId, subscriptionId, () -> withSubscription(subscriptionId, subscription -> {
-            subscription.activate();
-            log.info("Subscription activated after successful payment: subscriptionId={}", subscriptionId);
+            // Log only what actually happened - see CancellationService
+            // for the live bug this exact check exists to avoid (a stray
+            // or racing message logging a transition as successful when
+            // the entity's own guard made it a no-op).
+            if (subscription.activate()) {
+                log.info("Subscription activated after successful payment: subscriptionId={}", subscriptionId);
+            } else {
+                log.info("Ignoring PaymentSucceeded - subscription not in PENDING_PAYMENT: subscriptionId={}, currentStatus={}",
+                        subscriptionId, subscription.getStatus());
+            }
         }));
     }
 
     @Transactional
     public void handlePaymentFailed(UUID eventId, UUID subscriptionId, String reason) {
         withDedup(eventId, subscriptionId, () -> withSubscription(subscriptionId, subscription -> {
-            subscription.enterGracePeriod();
-            log.info("Subscription entered grace period after failed payment: subscriptionId={}, reason={}", subscriptionId, reason);
+            if (subscription.enterGracePeriod()) {
+                log.info("Subscription entered grace period after failed payment: subscriptionId={}, reason={}", subscriptionId, reason);
+            } else {
+                log.info("Ignoring PaymentFailed - subscription not in PENDING_PAYMENT: subscriptionId={}, currentStatus={}",
+                        subscriptionId, subscription.getStatus());
+            }
         }));
     }
 
