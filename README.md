@@ -9,6 +9,46 @@ Kubernetes-манифесты под kind, Prometheus/Grafana, OpenTelemetry/Jae
 
 Обоснование границ сервисов и полная схема событий — [docs/architecture.md](docs/architecture.md).
 
+## Архитектура
+
+```mermaid
+graph LR
+    subgraph SUB["subscription-service (Java, Postgres)"]
+        S1[Subscription lifecycle]
+        S2[Retention / Cancellation]
+        S3[Loyalty]
+    end
+    subgraph BILL["billing-service (Java, Postgres)"]
+        B1[Invoices & Payments]
+    end
+    subgraph NOTIF["notification-service (Java, MongoDB)"]
+        N1[Notification history]
+    end
+    subgraph AN["analytics-service (Go, Postgres)"]
+        A1[Cancellation funnel]
+    end
+
+    S1 -.publishes.-> T1[(subscription.events)]
+    S2 -.publishes.-> T2[(retention.events)]
+    S3 -.publishes.-> T3[(loyalty.events)]
+    B1 -.publishes.-> T4[(billing.events)]
+
+    T1 -.consumes.-> BILL
+    T1 -.consumes.-> NOTIF
+    T4 -.consumes.-> SUB
+    T4 -.consumes.-> NOTIF
+    T2 -.consumes.-> S3
+    T2 -.consumes.-> AN
+    T2 -.consumes.-> NOTIF
+```
+
+Каждый прямоугольник — Kafka-топик, каждая пунктирная стрелка — publish
+или consume. Топик называется по домену **издателя**, не потребителя —
+почему это важно и как это удерживает сервисы слабо связанными подробно
+разобрано в `docs/architecture.md`, там же — сиквенс-диаграммы сквозного
+сценария покупки (Outbox) и саги отмены с компенсацией, плюс диаграмма
+Ingress/HPA-топологии в Kubernetes.
+
 ## Сервисы
 
 | Сервис | Стек | Статус |
@@ -171,6 +211,19 @@ curl -X POST http://localhost/subscription-service/subscriptions \
 kubectl get hpa -n sublite
 ```
 
+## Что демонстрирует проект
+
+| Паттерн | Где | Живая проверка |
+|---|---|---|
+| Transactional Outbox | `OutboxPoller`, subscription-service и billing-service | HTTP-ответ уходит раньше, чем событие в Kafka — видно в трейсинге (два разных trace root) |
+| Идемпотентные консьюмеры | `processed_messages` (Postgres) / `_id`-дедуп (MongoDB) | реальное сообщение перевыпущено байт-в-байт с тем же `eventId` — второй раз пропущено |
+| Retry + DLQ + ручной replay | `DefaultErrorHandler` + `DeadLetterPublishingRecoverer` на всех консьюмерах | битое сообщение отправлено вручную через `kafka-console-producer` — ушло в `.DLQ`, реплеено через `/admin/dlq/{topic}/replay` |
+| Saga с компенсацией | choreography subscription-service ↔ billing-service | неудачный возврат отменяет CANCEL_PENDING обратно в ACTIVE, а не оставляет подписку в подвешенном статусе |
+| Resilience4j | `ResilientPaymentGateway` в billing-service | 20 покупок подряд — retry гасит технические сбои платёжного шлюза, ни одно сообщение не попало в DLQ |
+| Метрики + дашборд | Prometheus + Grafana, `spring.kafka.*.observation-enabled` | [localhost:3000/d/sublite-overview](http://localhost:3000/d/sublite-overview) — бизнес-события, resilience, системное здоровье |
+| Распределённый трейсинг | OpenTelemetry Java agent + Jaeger, без единой строчки кода в сервисах | один trace ID проходит через 3 сервиса и Kafka одним деревом спанов |
+| Kubernetes | Namespace/ConfigMap/Secret/Deployment/Service/Ingress/HPA под kind | HPA сам поймал реальный CPU-всплеск и отмасштабировал subscription-service 1 → 4 без синтетической нагрузки |
+
 ## План
 
 1. ~~Границы сервисов и схема событий~~ — [docs/architecture.md](docs/architecture.md)
@@ -184,5 +237,5 @@ kubectl get hpa -n sublite
 9-10a. ~~Prometheus + Grafana~~
 9-10b. ~~OpenTelemetry + Jaeger~~
 11a. ~~Kubernetes-манифесты под kind (ядро системы)~~
-11b. ~~Ingress + HPA под kind~~ — этот шаг
-12. README и диаграммы
+11b. ~~Ingress + HPA под kind~~
+12. ~~README и диаграммы~~ — этот шаг

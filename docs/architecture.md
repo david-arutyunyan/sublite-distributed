@@ -169,6 +169,52 @@ At-least-once + идемпотентный consumer, не exactly-once. Kafka Tr
 через границу независимых сервисов с раздельными БД. Промышленный паттерн —
 не бороться за EOS, а сделать side-effect идемпотентным через дедуп-таблицу.
 
+## Сквозной сценарий: покупка через Outbox (шаги 3-4, сделано)
+
+Ниже — не отдельный механизм, а то, как всё выше СОБИРАЕТСЯ в одну живую
+транзакцию покупки. Ключевой момент диаграммы: HTTP-ответ клиенту уходит
+ДО того, как событие вообще опубликовано в Kafka — `OutboxPoller`
+работает в своём собственном потоке (`@Scheduled`), полностью
+отвязанном от потока, обработавшего исходный запрос. Это и есть цена
+Transactional Outbox за надёжность (см. также раздел про две
+отдельные trace-цепочки ниже, в разделе про трейсинг).
+
+```mermaid
+sequenceDiagram
+    actor Client
+    participant Sub as subscription-service
+    participant SubDB as Postgres (subscription)
+    participant Kafka
+    participant Bill as billing-service
+
+    Client->>Sub: POST /subscriptions
+    Sub->>SubDB: INSERT Subscription(PENDING_PAYMENT) + OutboxEvent<br/>— одна локальная транзакция
+    Sub-->>Client: 201, status: PENDING_PAYMENT
+    Note over Sub,Kafka: Событие ещё НЕ опубликовано в этот момент
+
+    loop OutboxPoller (@Scheduled, свой поток)
+        Sub->>SubDB: SELECT ... FOR UPDATE SKIP LOCKED
+        Sub->>Kafka: publish SubscriptionCreated (subscription.events)
+        Sub->>SubDB: UPDATE OutboxEvent SET published = true
+    end
+
+    Kafka->>Bill: SubscriptionCreated
+    Bill->>Bill: PaymentGateway.charge()<br/>(Resilience4j: retry / circuit breaker, шаг 8)
+    alt оплата прошла
+        Bill->>Kafka: publish PaymentSucceeded (billing.events)
+    else отклонено картой или технический сбой
+        Bill->>Kafka: publish PaymentFailed (billing.events)
+    end
+
+    Kafka->>Sub: PaymentSucceeded / PaymentFailed
+    Sub->>SubDB: UPDATE status = ACTIVE | GRACE_PERIOD
+```
+
+notification-service на этой диаграмме не показан отдельной веткой только
+ради читаемости — он симметрично слушает оба топика
+(`subscription.events`, `billing.events`) теми же двумя сообщениями, что
+и billing-service, и пишет по одной записи `Notification` на каждое.
+
 ## Идемпотентные consumer'ы (шаг 5, сделано)
 
 `subscription-service` и `billing-service` — каждый со своей таблицей
@@ -257,19 +303,30 @@ end-offset'ов топика ДО чтения, а не "читаем пока �
 сервис реагирует на события и публикует свои. С РЕАЛЬНОЙ компенсирующей
 транзакцией, не просто цепочкой событий в одну сторону:
 
-```
-POST /subscriptions/{id}/cancel
-  subscription-service: ACTIVE -> CANCEL_PENDING
-  публикует SubscriptionCancellationRequested
-      |
-      v
-billing-service слушает, пробует вернуть деньги через PaymentGateway.refund()
-  публикует RefundIssued ИЛИ RefundFailed
-      |
-      v
-subscription-service слушает:
-  RefundIssued  -> CANCEL_PENDING -> CANCELLED (прямой путь завершён)
-  RefundFailed  -> CANCEL_PENDING -> ACTIVE    (КОМПЕНСАЦИЯ: откат)
+```mermaid
+sequenceDiagram
+    actor Client
+    participant Sub as subscription-service
+    participant Kafka
+    participant Bill as billing-service
+
+    Client->>Sub: POST /subscriptions/{id}/cancel
+    Sub->>Sub: ACTIVE -> CANCEL_PENDING<br/>(оптимистичный переход, requestCancellation)
+    Sub-->>Client: 202
+    Sub->>Kafka: publish SubscriptionCancellationRequested
+
+    Kafka->>Bill: SubscriptionCancellationRequested
+    Bill->>Bill: PaymentGateway.refund()
+
+    alt возврат прошёл
+        Bill->>Kafka: publish RefundIssued
+        Kafka->>Sub: RefundIssued
+        Sub->>Sub: CANCEL_PENDING -> CANCELLED<br/>(confirmCancellation — прямой путь завершён)
+    else возврат не удался
+        Bill->>Kafka: publish RefundFailed
+        Kafka->>Sub: RefundFailed
+        Sub->>Sub: CANCEL_PENDING -> ACTIVE<br/>(abortCancellation — КОМПЕНСАЦИЯ: откат)
+    end
 ```
 
 `CANCEL_PENDING` — статус саги "в полёте", та же роль, что `PENDING_PAYMENT`
@@ -537,6 +594,40 @@ Ingress (`k8s/09-ingress.yaml`) и HPA (`k8s/10-hpa.yaml`) поверх ядра
 кластер с `extraPortMappings` (80/443) + лейблом `ingress-ready=true` —
 оба задаются только на этапе создания кластера, задним числом не
 патчатся.
+
+```mermaid
+graph TB
+    Client(["curl http://localhost/&lt;service&gt;/..."])
+    Ingress["Ingress (ingress-nginx)<br/>path-prefix + rewrite-target"]
+    SubSvc["Service: subscription-service"]
+    BillSvc["Service: billing-service"]
+    NotifSvc["Service: notification-service"]
+    HPA["HorizontalPodAutoscaler<br/>target: cpu 50% от requests"]
+
+    subgraph SubPods["Deployment: subscription-service (1-5 реплик)"]
+        SP1[Pod]
+        SP2[Pod]
+        SP3[Pod]
+    end
+    BillPod["Deployment: billing-service (1 реплика)"]
+    NotifPod["Deployment: notification-service (1 реплика)"]
+
+    Client -->|"/subscription-service/*"| Ingress
+    Client -->|"/billing-service/*"| Ingress
+    Client -->|"/notification-service/*"| Ingress
+
+    Ingress -->|"префикс срезан"| SubSvc
+    Ingress -->|"префикс срезан"| BillSvc
+    Ingress -->|"префикс срезан"| NotifSvc
+
+    SubSvc --> SP1
+    SubSvc --> SP2
+    SubSvc --> SP3
+    BillSvc --> BillPod
+    NotifSvc --> NotifPod
+
+    HPA -.наблюдает CPU, масштабирует.-> SubPods
+```
 
 **HPA**: цель — subscription-service, не случайный выбор. Его consumer
 group (шаг 4) и `OutboxPoller` с `FOR UPDATE SKIP LOCKED` (шаг 3) с
