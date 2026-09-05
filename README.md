@@ -2,10 +2,10 @@
 
 Тот же домен, что [sublite-core](https://github.com/david-arutyunyan/sublite-core)
 (подписки, биллинг, retention/cancellation flow, лояльность), разрезанный на
-сервисы через Kafka. Цель проекта — закрыть пробел с брокерами сообщений и
-Kubernetes: Transactional Outbox, идемпотентные консьюмеры, Saga (хореография)
-с компенсацией, Resilience4j (circuit breaker, retry, DLQ), Kafka в KRaft,
-Kubernetes-манифесты под kind, Prometheus/Grafana, OpenTelemetry/Jaeger.
+сервисы через Kafka: Transactional Outbox, идемпотентные консьюмеры, Saga
+(хореография) с компенсацией, Resilience4j (circuit breaker, retry, DLQ),
+Kafka в KRaft, Kubernetes-манифесты под kind, Prometheus/Grafana,
+OpenTelemetry/Jaeger.
 
 Обоснование границ сервисов и полная схема событий — [docs/architecture.md](docs/architecture.md).
 
@@ -223,19 +223,3 @@ kubectl get hpa -n sublite
 | Метрики + дашборд | Prometheus + Grafana, `spring.kafka.*.observation-enabled` | [localhost:3000/d/sublite-overview](http://localhost:3000/d/sublite-overview) — бизнес-события, resilience, системное здоровье |
 | Распределённый трейсинг | OpenTelemetry Java agent + Jaeger, без единой строчки кода в сервисах | один trace ID проходит через 3 сервиса и Kafka одним деревом спанов |
 | Kubernetes | Namespace/ConfigMap/Secret/Deployment/Service/Ingress/HPA под kind | HPA сам поймал реальный CPU-всплеск и отмасштабировал subscription-service 1 → 4 без синтетической нагрузки |
-
-## План
-
-1. ~~Границы сервисов и схема событий~~ — [docs/architecture.md](docs/architecture.md)
-2. ~~Kafka в Compose, топики~~
-3. ~~Transactional Outbox (поллер) в subscription-service~~
-4. ~~Вынос billing-service, консьюмер SubscriptionCreated~~
-5. ~~Идемпотентные консьюмеры (processed_messages), notification-service~~
-6. ~~DLQ + retry + replay на реальных consumer'ах~~
-7. ~~Saga с компенсацией на сценарий отмены подписки~~
-8. ~~Resilience4j: circuit breaker, retry, таймауты~~
-9-10a. ~~Prometheus + Grafana~~
-9-10b. ~~OpenTelemetry + Jaeger~~
-11a. ~~Kubernetes-манифесты под kind (ядро системы)~~
-11b. ~~Ingress + HPA под kind~~
-12. ~~README и диаграммы~~ — этот шаг
