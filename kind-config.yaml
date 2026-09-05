@@ -1,12 +1,30 @@
 # A single-node kind cluster - enough to demonstrate Deployment/Service/
-# ConfigMap/Secret/probes/HPA locally without the complexity (and cost)
-# of a real multi-node cluster this project has no need for. Ingress
-# port mappings (extraPortMappings) land in step 11b, alongside the
-# ingress-nginx controller they're for - a bare kind cluster on its own
-# has no path from the host into the cluster's HTTP traffic, so there's
-# nothing to map yet at this step.
+# ConfigMap/Secret/probes/Ingress/HPA locally without the complexity
+# (and cost) of a real multi-node cluster this project has no need for.
+#
+# extraPortMappings + the ingress-ready label are kind's own documented
+# recipe for making an Ingress controller reachable from the HOST at
+# all - kind nodes are just Docker containers with no cloud LoadBalancer
+# to hand out an external IP, so without this, ingress-nginx would only
+# ever be reachable from OTHER pods in the cluster, never from outside
+# it. 80/443 on the node map straight to 80/443 on the host - matches
+# what a real Ingress normally listens on, so no unusual port to
+# remember.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: sublite
 nodes:
   - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 443
+        protocol: TCP

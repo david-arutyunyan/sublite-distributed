@@ -146,10 +146,10 @@ Kafka → subscription-service/notification-service одним деревом с
 
 Тот же стек (ядро — Kafka, обе Postgres, Mongo, три сервиса; без
 observability-стека, тот остаётся docker-compose-only) как Namespace/
-ConfigMap/Secret/Deployment/Service + пробы — полная инструкция и разбор
-четырёх реальных проблем (прокси в `kind`, multi-arch image load, deadlock
-самоссылающегося Kafka, таймауты проб) в [`k8s/README.md`](k8s/README.md).
-Коротко:
+ConfigMap/Secret/Deployment/Service/Ingress/HPA + пробы — полная
+инструкция и разбор пяти реальных проблем (прокси в `kind`, multi-arch
+image load, deadlock самоссылающегося Kafka, таймауты проб, JVM-старт
+дольше окна liveness-пробы) в [`k8s/README.md`](k8s/README.md). Коротко:
 
 ```bash
 docker compose build subscription-service billing-service notification-service
@@ -157,8 +157,18 @@ kind create cluster --config kind-config.yaml
 kind load docker-image sublite-distributed-subscription-service:latest \
   sublite-distributed-billing-service:latest \
   sublite-distributed-notification-service:latest --name sublite
-kubectl apply -f k8s/
-kubectl port-forward -n sublite svc/subscription-service 8081:8081
+kubectl apply -f k8s/00-namespace.yaml -f k8s/01-kafka.yaml -f k8s/02-kafka-init-job.yaml \
+  -f k8s/03-subscription-postgres.yaml -f k8s/04-billing-postgres.yaml -f k8s/05-notification-mongo.yaml \
+  -f k8s/06-subscription-service.yaml -f k8s/07-billing-service.yaml -f k8s/08-notification-service.yaml
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.3/deploy/static/provider/kind/deploy.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+kubectl patch deployment metrics-server -n kube-system --type='json' \
+  -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+kubectl apply -f k8s/09-ingress.yaml -f k8s/10-hpa.yaml
+curl -X POST http://localhost/subscription-service/subscriptions \
+  -H "Content-Type: application/json" \
+  -d '{"customerId":"11111111-2222-3333-4444-555555555555","planPriceId":"33333333-3333-3333-3333-333333333333"}'
+kubectl get hpa -n sublite
 ```
 
 ## План
@@ -173,6 +183,6 @@ kubectl port-forward -n sublite svc/subscription-service 8081:8081
 8. ~~Resilience4j: circuit breaker, retry, таймауты~~
 9-10a. ~~Prometheus + Grafana~~
 9-10b. ~~OpenTelemetry + Jaeger~~
-11a. ~~Kubernetes-манифесты под kind (ядро системы)~~ — этот шаг
-11b. Ingress + HPA под kind
+11a. ~~Kubernetes-манифесты под kind (ядро системы)~~
+11b. ~~Ingress + HPA под kind~~ — этот шаг
 12. README и диаграммы

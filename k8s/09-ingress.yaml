@@ -1,0 +1,42 @@
+# Path-prefix routing to all three services through ONE Ingress, not
+# host-based routing (kind's single node has one address anyway) and not
+# simple top-level paths like /subscriptions - billing-service AND
+# subscription-service both expose /admin/dlq/{topic}/replay (step 6),
+# so routing on the APPLICATION's own paths alone can't tell which
+# service a request meant. Each service gets its own path PREFIX
+# instead, stripped via rewrite-target before the request reaches the
+# app - the app itself has no idea the prefix ever existed.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sublite-ingress
+  namespace: sublite
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /subscription-service(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: subscription-service
+                port:
+                  number: 8081
+          - path: /billing-service(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: billing-service
+                port:
+                  number: 8082
+          - path: /notification-service(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: notification-service
+                port:
+                  number: 8083

@@ -2,9 +2,9 @@
 
 Manifests for the same distributed system `docker-compose.yml` runs
 locally, ported to plain Kubernetes resources: Namespace, ConfigMap,
-Secret, Deployment, Service, probes (step 11a - done). Ingress and HPA
-land in step 11b, alongside the cluster add-ons (ingress-nginx,
-metrics-server) they need.
+Secret, Deployment, Service, probes (step 11a), plus Ingress and HPA
+(step 11b) with the cluster add-ons they need - ingress-nginx and
+metrics-server.
 
 Deliberately scoped to the CORE distributed system only - Kafka, both
 Postgres instances, Mongo, and the three application services. The
@@ -53,7 +53,7 @@ kind load docker-image \
   sublite-distributed-notification-service:latest \
   --name sublite
 
-# 4. Apply everything.
+# 4. Apply the core system.
 kubectl apply -f k8s/00-namespace.yaml
 kubectl apply -f k8s/01-kafka.yaml
 kubectl apply -f k8s/02-kafka-init-job.yaml
@@ -64,7 +64,27 @@ kubectl apply -f k8s/06-subscription-service.yaml
 kubectl apply -f k8s/07-billing-service.yaml
 kubectl apply -f k8s/08-notification-service.yaml
 
-# 5. Watch it come up (takes a couple of minutes - Postgres/Kafka/Mongo
+# 5. Install ingress-nginx (kind's own deploy manifest, already wired for
+#    kind's node ports - this is why kind-config.yaml's extraPortMappings
+#    and ingress-ready label had to exist BEFORE the cluster was created).
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.3/deploy/static/provider/kind/deploy.yaml
+kubectl wait --namespace ingress-nginx \
+  --for=condition=ready pod \
+  --selector=app.kubernetes.io/component=controller \
+  --timeout=180s
+
+# 6. Install metrics-server (HPA needs it for CPU numbers) - and patch it
+#    for kind's self-signed kubelet certs, which a stock metrics-server
+#    doesn't trust.
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+kubectl patch deployment metrics-server -n kube-system --type='json' \
+  -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+
+# 7. Apply Ingress + HPA.
+kubectl apply -f k8s/09-ingress.yaml
+kubectl apply -f k8s/10-hpa.yaml
+
+# 8. Watch it come up (takes a couple of minutes - Postgres/Kafka/Mongo
 #    all need to actually start before the app services' init
 #    containers let them proceed).
 kubectl get pods -n sublite -w
@@ -72,20 +92,36 @@ kubectl get pods -n sublite -w
 
 ## Verify
 
-```bash
-kubectl port-forward -n sublite svc/subscription-service 8081:8081
-```
-
-Then, in another terminal, the exact same purchase/cancel flow as the
-docker-compose README:
+Through the Ingress - no port-forward needed, kind-config.yaml's
+`extraPortMappings` already put ports 80/443 on `localhost`:
 
 ```bash
-curl -X POST http://localhost:8081/subscriptions \
+curl -X POST http://localhost/subscription-service/subscriptions \
   -H "Content-Type: application/json" \
   -d '{"customerId":"11111111-2222-3333-4444-555555555555","planPriceId":"33333333-3333-3333-3333-333333333333"}'
 
 kubectl exec -n sublite deploy/subscription-postgres -- \
   psql -U subscription -d subscription -c "select id, status from subscriptions;"
+```
+
+The path prefix (`/subscription-service/...`) is stripped by the
+Ingress's `rewrite-target` before subscription-service ever sees the
+request - it still just sees `POST /subscriptions`.
+
+Or, without the Ingress, the same `kubectl port-forward` approach from
+step 11a still works exactly as before:
+
+```bash
+kubectl port-forward -n sublite svc/subscription-service 8081:8081
+```
+
+HPA - `kubectl get hpa -n sublite` shows `<unknown>` for the CPU target
+until metrics-server has completed at least one scrape cycle (a few tens
+of seconds after it becomes Ready), then a real percentage:
+
+```bash
+kubectl get hpa -n sublite
+kubectl top pods -n sublite
 ```
 
 ## Real gotchas hit standing this up (not hypothetical)
@@ -140,3 +176,23 @@ thing that's invisible in a docker-compose setup (no Service abstraction,
 no probe timeout to configure) and only shows up once the exact same
 system moves to Kubernetes - which is arguably the more interesting
 lesson from this step than the manifests themselves.
+
+5. **`livenessProbe.initialDelaySeconds` too tight for JVM startup under
+   kind's CPU contention (step 11b).** After recreating the cluster for
+   Ingress support, subscription-service and billing-service both got
+   stuck in a genuine restart loop. `kubectl logs --previous` showed the
+   full story: `Started SubscriptionServiceApplication in 55.091 seconds`
+   immediately followed, one second later, by `Commencing graceful
+   shutdown` - the pod was killed right as it finally became healthy.
+   With `initialDelaySeconds: 30` and the default `failureThreshold: 3`
+   on a 15s period, kubelet gives up at ~75s - not enough when this JVM
+   (Kafka consumer group join, JPA, the OTel javaagent's own bytecode
+   instrumentation at startup) was observed taking 55-75s just to finish
+   Spring Boot startup on a laptop-hosted cluster juggling Kafka, two
+   Postgres instances, and Mongo at the same time. Different from gotcha
+   #4 above - that was one slow PROBE COMMAND; this is the total time
+   BEFORE the first probe can succeed at all. Fixed with
+   `initialDelaySeconds: 60` + `failureThreshold: 5` (~135s of grace) on
+   both services' liveness probes. Readiness was left alone - a failed
+   readiness check just withholds traffic, it doesn't kill the pod, so
+   there was no equivalent risk there.

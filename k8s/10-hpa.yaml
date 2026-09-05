@@ -1,0 +1,33 @@
+# subscription-service, not an arbitrary choice - it's the one service
+# in this project explicitly built from the start to be safe running as
+# multiple replicas: OutboxPoller's `FOR UPDATE SKIP LOCKED` query
+# (step 3) exists specifically so several pods polling the same outbox
+# table don't queue behind each other's transaction, and its Kafka
+# consumer group (group.id=subscription-service, step 4) automatically
+# splits partitions across however many replicas are running - the
+# consumer-groups horizontal-scaling mechanism docs/architecture.md
+# described all the way back in step 1. Scaling this out is exercising a
+# design decision made 10 steps ago, not introducing a new one.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: subscription-service
+  namespace: sublite
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: subscription-service
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # Against the 100m cpu REQUEST set in 06-subscription-service.yaml -
+          # HPA's percentage is always relative to the request, not an
+          # absolute value, which is why that request had to be set
+          # before this could mean anything.
+          averageUtilization: 50
