@@ -142,6 +142,25 @@ trace ID пройдёт через subscription-service → Kafka → billing-se
 Kafka → subscription-service/notification-service одним деревом спанов,
 включая сам SQL внутри каждого сервиса.
 
+## Kubernetes (kind)
+
+Тот же стек (ядро — Kafka, обе Postgres, Mongo, три сервиса; без
+observability-стека, тот остаётся docker-compose-only) как Namespace/
+ConfigMap/Secret/Deployment/Service + пробы — полная инструкция и разбор
+четырёх реальных проблем (прокси в `kind`, multi-arch image load, deadlock
+самоссылающегося Kafka, таймауты проб) в [`k8s/README.md`](k8s/README.md).
+Коротко:
+
+```bash
+docker compose build subscription-service billing-service notification-service
+kind create cluster --config kind-config.yaml
+kind load docker-image sublite-distributed-subscription-service:latest \
+  sublite-distributed-billing-service:latest \
+  sublite-distributed-notification-service:latest --name sublite
+kubectl apply -f k8s/
+kubectl port-forward -n sublite svc/subscription-service 8081:8081
+```
+
 ## План
 
 1. ~~Границы сервисов и схема событий~~ — [docs/architecture.md](docs/architecture.md)
@@ -153,6 +172,7 @@ Kafka → subscription-service/notification-service одним деревом с
 7. ~~Saga с компенсацией на сценарий отмены подписки~~
 8. ~~Resilience4j: circuit breaker, retry, таймауты~~
 9-10a. ~~Prometheus + Grafana~~
-9-10b. ~~OpenTelemetry + Jaeger~~ — этот шаг
-11. Kubernetes-манифесты под kind
+9-10b. ~~OpenTelemetry + Jaeger~~
+11a. ~~Kubernetes-манифесты под kind (ядро системы)~~ — этот шаг
+11b. Ingress + HPA под kind
 12. README и диаграммы

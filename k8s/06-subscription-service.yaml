@@ -1,0 +1,104 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: subscription-service-config
+  namespace: sublite
+data:
+  DB_HOST: subscription-postgres
+  DB_PORT: "5432"
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: subscription-service
+  namespace: sublite
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: subscription-service
+  template:
+    metadata:
+      labels:
+        app: subscription-service
+    spec:
+      # Plain TCP wait loops, not a Job-completion check - simple,
+      # no RBAC/kubectl needed in the init image. This only guarantees
+      # the Kafka BROKER is reachable, not that kafka-init has finished
+      # creating topics with the right partition count yet - acceptable
+      # here because Kafka's own allow.auto.create.topics default means
+      # a producer/consumer referencing a not-yet-created topic still
+      # works, just with default (not create-topics.sh's) partitioning
+      # if it loses that race. A real deployment would block on the Job
+      # instead; this is a deliberate demo-scope simplification.
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z subscription-postgres 5432; do echo waiting for subscription-postgres; sleep 2; done"]
+        - name: wait-for-kafka
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z kafka 9092; do echo waiting for kafka; sleep 2; done"]
+      containers:
+        - name: subscription-service
+          image: sublite-distributed-subscription-service:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: subscription-service-config
+          env:
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: subscription-postgres-credentials
+                  key: POSTGRES_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: subscription-postgres-credentials
+                  key: POSTGRES_PASSWORD
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          # /actuator/health/liveness and /readiness, not the combined
+          # /actuator/health both docker-compose's own HEALTHCHECK and
+          # the other two services' current Docker setup still use -
+          # Spring Boot auto-adds these two narrower health GROUPS the
+          # moment it detects a Kubernetes environment (KUBERNETES_
+          # SERVICE_HOST, which the kubelet always injects), and they're
+          # the actually-correct k8s idiom: liveness answers "should this
+          # pod be restarted", readiness answers "should it receive
+          # traffic" - two different questions the single combined
+          # endpoint conflates (e.g. a DOWN downstream dependency should
+          # usually fail readiness, not liveness - restarting the pod
+          # wouldn't fix a downstream outage).
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8081
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: subscription-service
+  namespace: sublite
+spec:
+  selector:
+    app: subscription-service
+  ports:
+    - port: 8081
+      targetPort: 8081

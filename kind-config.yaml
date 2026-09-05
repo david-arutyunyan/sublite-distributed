@@ -1,0 +1,12 @@
+# A single-node kind cluster - enough to demonstrate Deployment/Service/
+# ConfigMap/Secret/probes/HPA locally without the complexity (and cost)
+# of a real multi-node cluster this project has no need for. Ingress
+# port mappings (extraPortMappings) land in step 11b, alongside the
+# ingress-nginx controller they're for - a bare kind cluster on its own
+# has no path from the host into the cluster's HTTP traffic, so there's
+# nothing to map yet at this step.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: sublite
+nodes:
+  - role: control-plane

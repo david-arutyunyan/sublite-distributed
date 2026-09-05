@@ -1,0 +1,91 @@
+# stringData (plaintext), not the base64-encoded `data` field - readable
+# in a diff, which matters for a portfolio manifest meant to be read.
+# NOT how a real deployment would do this (plaintext credentials
+# checked into git are exactly what Secret objects are supposed to
+# avoid) - a real one would generate this from a vault/external-secrets
+# operator, never commit it. Demo-appropriate, not production-appropriate.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: subscription-postgres-credentials
+  namespace: sublite
+type: Opaque
+stringData:
+  POSTGRES_USER: subscription
+  POSTGRES_PASSWORD: subscription
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: subscription-postgres-data
+  namespace: sublite
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: subscription-postgres
+  namespace: sublite
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: subscription-postgres
+  template:
+    metadata:
+      labels:
+        app: subscription-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: subscription
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: subscription-postgres-credentials
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: subscription-postgres-credentials
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "subscription", "-d", "subscription"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "subscription", "-d", "subscription"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: subscription-postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: subscription-postgres
+  namespace: sublite
+spec:
+  selector:
+    app: subscription-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

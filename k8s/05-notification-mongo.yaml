@@ -1,0 +1,74 @@
+# No Secret here - matches docker-compose's own notification-mongo,
+# which never set MONGO_INITDB_ROOT_USERNAME/PASSWORD either
+# (unauthenticated, fine for a local dev/demo cluster with no network
+# exposure outside it - not a gap introduced by porting to k8s).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: notification-mongo-data
+  namespace: sublite
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-mongo
+  namespace: sublite
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: notification-mongo
+  template:
+    metadata:
+      labels:
+        app: notification-mongo
+    spec:
+      containers:
+        - name: mongo
+          image: mongo:7.0
+          ports:
+            - containerPort: 27017
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+          readinessProbe:
+            exec:
+              command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            # See kafka's own readinessProbe comment for why this is
+            # here - mongosh starts a whole Node.js runtime per
+            # invocation, same "probe command itself is slower than
+            # Kubernetes' 1s default timeout" risk as Kafka's JVM-based
+            # check, fixed proactively here rather than waiting to hit
+            # it live a second time.
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+            initialDelaySeconds: 10
+            timeoutSeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: notification-mongo-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-mongo
+  namespace: sublite
+spec:
+  selector:
+    app: notification-mongo
+  ports:
+    - port: 27017
+      targetPort: 27017

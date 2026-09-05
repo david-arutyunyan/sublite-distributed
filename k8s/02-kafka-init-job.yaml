@@ -1,0 +1,72 @@
+# Same topic-creation script as kafka/create-topics.sh (docker-compose's
+# own kafka-init service) - duplicated inline here rather than mounted
+# from that file, so `kubectl apply -f k8s/` stays fully self-contained
+# and repeatable with no imperative `kubectl create configmap --from-file`
+# step required first. If the topic list in kafka/create-topics.sh ever
+# changes, this ConfigMap needs the same edit made twice - a real,
+# accepted cost of keeping the k8s manifests standalone.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-init-script
+  namespace: sublite
+data:
+  create-topics.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    BOOTSTRAP="kafka:9092"
+    KAFKA_TOPICS="/opt/kafka/bin/kafka-topics.sh"
+
+    TOPICS=(
+      subscription.events
+      subscription.events.DLQ
+      retention.events
+      retention.events.DLQ
+      billing.events
+      billing.events.DLQ
+      loyalty.events
+      loyalty.events.DLQ
+      notification.events
+      notification.events.DLQ
+    )
+
+    for topic in "${TOPICS[@]}"; do
+      echo "Creating topic: $topic"
+      "$KAFKA_TOPICS" --bootstrap-server "$BOOTSTRAP" \
+        --create --if-not-exists \
+        --topic "$topic" \
+        --partitions 3 \
+        --replication-factor 1
+    done
+
+    echo "Topics:"
+    "$KAFKA_TOPICS" --bootstrap-server "$BOOTSTRAP" --list
+---
+# A Job, not a Deployment - this runs once to completion and exits,
+# same "one-shot" role as docker-compose's kafka-init service. Each
+# service Deployment below waits on this via an initContainer, the k8s
+# equivalent of docker-compose's `depends_on: condition:
+# service_completed_successfully`.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-init
+  namespace: sublite
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: kafka-init
+          image: apache/kafka:3.8.0
+          command: ["bash", "/scripts/create-topics.sh"]
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+      volumes:
+        - name: script
+          configMap:
+            name: kafka-init-script
+            defaultMode: 0755
