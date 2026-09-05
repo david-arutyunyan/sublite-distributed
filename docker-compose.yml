@@ -76,6 +76,20 @@ services:
       kafka:
         condition: service_healthy
 
+  # Jaeger all-in-one (step 9-10b) - collector, storage (in-memory, fine
+  # for a local demo, gone on restart) and query UI all in one container.
+  # OTLP receiver is on by default in modern all-in-one images (gRPC on
+  # 4317, HTTP on 4318) - COLLECTOR_OTLP_ENABLED set explicitly anyway,
+  # cheap insurance against relying on a default that could change.
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    ports:
+      - "16686:16686" # Jaeger UI
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
   # One Postgres CONTAINER per service, not one instance with per-service
   # schemas (the monolith's approach) - a shared instance is a shared
   # failure domain and an easy back door for one service to reach into
@@ -106,6 +120,20 @@ services:
       DB_HOST: subscription-postgres
       DB_PORT: "5432"
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      OTEL_SERVICE_NAME: subscription-service
+      # 4318 (HTTP), not 4317 (gRPC) - the OTel Java agent's DEFAULT OTLP
+      # protocol is http/protobuf, not gRPC (easy to assume backwards;
+      # the agent itself warns loudly in its logs if the port and
+      # protocol don't match, which is how this got caught).
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_TRACES_EXPORTER: otlp
+      # Prometheus/Grafana (step 9-10a) already own metrics - a second,
+      # OTel-driven metrics pipeline into Jaeger would just be a
+      # confusing duplicate, not additional coverage. Same for logs -
+      # this stack's logs already go to stdout (`docker compose logs`),
+      # no log backend wired up to send them to.
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
     depends_on:
       subscription-postgres:
         condition: service_healthy
@@ -113,6 +141,8 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+      jaeger:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health"]
       interval: 10s
@@ -146,6 +176,15 @@ services:
       DB_HOST: billing-postgres
       DB_PORT: "5432"
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      OTEL_SERVICE_NAME: billing-service
+      # 4318 (HTTP), not 4317 (gRPC) - the OTel Java agent's DEFAULT OTLP
+      # protocol is http/protobuf, not gRPC (easy to assume backwards;
+      # the agent itself warns loudly in its logs if the port and
+      # protocol don't match, which is how this got caught).
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
     depends_on:
       billing-postgres:
         condition: service_healthy
@@ -153,6 +192,8 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+      jaeger:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8082/actuator/health"]
       interval: 10s
@@ -184,6 +225,15 @@ services:
       DB_HOST: notification-mongo
       DB_PORT: "27017"
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      OTEL_SERVICE_NAME: notification-service
+      # 4318 (HTTP), not 4317 (gRPC) - the OTel Java agent's DEFAULT OTLP
+      # protocol is http/protobuf, not gRPC (easy to assume backwards;
+      # the agent itself warns loudly in its logs if the port and
+      # protocol don't match, which is how this got caught).
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
     depends_on:
       notification-mongo:
         condition: service_healthy
@@ -191,6 +241,8 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+      jaeger:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8083/actuator/health"]
       interval: 10s

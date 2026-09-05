@@ -29,8 +29,9 @@ docker compose up -d --build
 топиков/партиций/сообщений + subscription-service (`localhost:8081`),
 billing-service (`localhost:8082`) и notification-service (`localhost:8083`) —
 первые два со своим Postgres, последний со своим MongoDB — плюс
-[Prometheus](http://localhost:9090) и [Grafana](http://localhost:3000)
-(анонимный доступ, дашборд открывается сразу).
+[Prometheus](http://localhost:9090), [Grafana](http://localhost:3000)
+(анонимный доступ, дашборд открывается сразу) и [Jaeger](http://localhost:16686)
+(трейсинг).
 
 ```bash
 docker compose ps
@@ -132,6 +133,15 @@ docker compose logs billing-service | grep -i "payment gateway"
 resilience (retry/circuit breaker), системное здоровье (HTTP, JVM) —
 подробности в `docs/architecture.md`.
 
+Распределённый трейсинг (OpenTelemetry Java agent + Jaeger, без единой
+строчки кода в самих сервисах — детали и разбор двух реальных гоч в
+`docs/architecture.md`): купи подписку выше, затем открой
+[localhost:16686](http://localhost:16686) → Search → service
+`subscription-service` → найди `OutboxPoller.publishPending` — один
+trace ID пройдёт через subscription-service → Kafka → billing-service →
+Kafka → subscription-service/notification-service одним деревом спанов,
+включая сам SQL внутри каждого сервиса.
+
 ## План
 
 1. ~~Границы сервисов и схема событий~~ — [docs/architecture.md](docs/architecture.md)
@@ -142,7 +152,7 @@ resilience (retry/circuit breaker), системное здоровье (HTTP, J
 6. ~~DLQ + retry + replay на реальных consumer'ах~~
 7. ~~Saga с компенсацией на сценарий отмены подписки~~
 8. ~~Resilience4j: circuit breaker, retry, таймауты~~
-9-10a. ~~Prometheus + Grafana~~ — этот шаг
-9-10b. OpenTelemetry + Jaeger
+9-10a. ~~Prometheus + Grafana~~
+9-10b. ~~OpenTelemetry + Jaeger~~ — этот шаг
 11. Kubernetes-манифесты под kind
 12. README и диаграммы
