@@ -44,3 +44,18 @@ sublite:
       initial-interval-ms: 500
       multiplier: 2.0
       max-interval-ms: 5000
+  resilience:
+    # A separate, INNER layer of retry from sublite.kafka.retry above -
+    # see ResilientPaymentGateway's javadoc for how the two relate.
+    retry:
+      max-attempts: 3
+      wait-duration-ms: 200
+    circuit-breaker:
+      # Open once >=50% of the last 10 calls failed; stay open 5s before
+      # trying a handful of test calls (half-open) to see if the gateway
+      # recovered.
+      failure-rate-threshold: 50
+      sliding-window-size: 10
+      wait-duration-in-open-state-ms: 5000
+      permitted-calls-in-half-open-state: 3
+    timeout-ms: 2000

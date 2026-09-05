@@ -14,7 +14,7 @@ Kubernetes-манифесты под kind, Prometheus/Grafana, OpenTelemetry/Jae
 | Сервис | Стек | Статус |
 |---|---|---|
 | subscription-service | Java 21, Spring Boot 4, Postgres | покупка + отмена (saga) + Outbox + идемпотентный консьюмер billing.events |
-| billing-service | Java 21, Spring Boot 4, Postgres | списание + возврат (saga) + Outbox + идемпотентный консьюмер subscription.events |
+| billing-service | Java 21, Spring Boot 4, Postgres | списание + возврат (saga) + Outbox + идемпотентный консьюмер subscription.events + Resilience4j вокруг PaymentGateway |
 | notification-service | Java 21, Spring Boot 4, MongoDB | история уведомлений, идемпотентные консьюмеры обоих топиков |
 | analytics-service | Go, Postgres | не начат (опционально) |
 
@@ -114,6 +114,16 @@ curl -X POST http://localhost:8081/subscriptions/<id>/cancel
 либо КОМПЕНСАЦИЯ обратно в `ACTIVE` при неудачном возврате — подписка не
 остаётся отменённой, если деньги вернуть не удалось.
 
+`PaymentGateway` в billing-service дополнительно обёрнут в Resilience4j
+(circuit breaker + retry + timeout, `docs/architecture.md`) — 10% вызовов
+`RandomPaymentGateway` теперь симулируют технический сбой шлюза (отдельно
+от 20% обычных деклайнов), которые retry гасит незаметно для сообщения в
+Kafka. Видно в логах:
+
+```bash
+docker compose logs billing-service | grep -i "payment gateway"
+```
+
 ## План
 
 1. ~~Границы сервисов и схема событий~~ — [docs/architecture.md](docs/architecture.md)
@@ -122,8 +132,8 @@ curl -X POST http://localhost:8081/subscriptions/<id>/cancel
 4. ~~Вынос billing-service, консьюмер SubscriptionCreated~~
 5. ~~Идемпотентные консьюмеры (processed_messages), notification-service~~
 6. ~~DLQ + retry + replay на реальных consumer'ах~~
-7. ~~Saga с компенсацией на сценарий отмены подписки~~ — этот шаг
-8. Resilience4j: circuit breaker, retry, таймауты
+7. ~~Saga с компенсацией на сценарий отмены подписки~~
+8. ~~Resilience4j: circuit breaker, retry, таймауты~~ — этот шаг
 9-10. Prometheus, Grafana, OpenTelemetry, Jaeger
 11. Kubernetes-манифесты под kind
 12. README и диаграммы

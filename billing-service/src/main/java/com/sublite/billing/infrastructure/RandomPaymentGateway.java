@@ -3,7 +3,7 @@ package com.sublite.billing.infrastructure;
 import com.sublite.billing.domain.ChargeResult;
 import com.sublite.billing.domain.Money;
 import com.sublite.billing.domain.PaymentGateway;
-import org.springframework.stereotype.Component;
+import com.sublite.billing.domain.PaymentGatewayUnavailableException;
 
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -13,11 +13,21 @@ import java.util.concurrent.ThreadLocalRandom;
  * memoization) because the outbox+dedup story for THIS project lives one
  * layer up, in how billing-service consumes subscription.events, not in
  * the gateway itself.
+ *
+ * Not a @Component (step 8) - ResilientPaymentGateway is the only
+ * Spring-managed PaymentGateway now, and constructs this directly as a
+ * plain collaborator. Two independent failure axes, not one: a business
+ * DECLINE (a normal, expected outcome real money-movement code has to
+ * handle regardless of retries) and a TECHNICAL failure (the gateway
+ * itself is unreachable/erroring - the thing retry/circuit-breaking
+ * actually exists for). Conflating them into one "chance of failure"
+ * knob would make the wrapper meaningless: retrying a declined card
+ * doesn't make it un-declined.
  */
-@Component
 public class RandomPaymentGateway implements PaymentGateway {
 
     private static final double DECLINE_RATE = 0.2;
+    private static final double TECHNICAL_FAILURE_RATE = 0.1;
 
     @Override
     public ChargeResult charge(Money amount) {
@@ -35,7 +45,11 @@ public class RandomPaymentGateway implements PaymentGateway {
     }
 
     private static ChargeResult outcome(String declineReason) {
-        if (ThreadLocalRandom.current().nextDouble() < DECLINE_RATE) {
+        double roll = ThreadLocalRandom.current().nextDouble();
+        if (roll < TECHNICAL_FAILURE_RATE) {
+            throw new PaymentGatewayUnavailableException("simulated payment gateway timeout");
+        }
+        if (roll < TECHNICAL_FAILURE_RATE + DECLINE_RATE) {
             return new ChargeResult.Declined(declineReason);
         }
         return new ChargeResult.Success(java.util.UUID.randomUUID().toString());

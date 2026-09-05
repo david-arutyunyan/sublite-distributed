@@ -51,6 +51,31 @@
             <artifactId>spring-kafka</artifactId>
         </dependency>
 
+        <!-- Core Resilience4j modules only - no spring-boot-starter/
+             spring-boot-actuator integration. That starter targets Boot
+             3's actuator/observability APIs, which is exactly the kind
+             of surface that's already moved twice in this project under
+             Boot 4 (Mongo's property prefix, spring-kafka's package
+             layout). The core modules are plain Java with no Spring Boot
+             dependency at all, so there's no version-compatibility
+             surface to hit - composed by hand in ResilientPaymentGateway
+             instead of via annotations + application.yml autoconfig. -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-circuitbreaker</artifactId>
+            <version>2.2.0</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-retry</artifactId>
+            <version>2.2.0</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-timelimiter</artifactId>
+            <version>2.2.0</version>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
