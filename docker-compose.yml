@@ -198,8 +198,45 @@ services:
       retries: 10
       start_period: 30s
 
+  # Scrapes /actuator/prometheus on all three services every 5s -
+  # config in prometheus/prometheus.yml.
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      subscription-service:
+        condition: service_healthy
+      billing-service:
+        condition: service_healthy
+      notification-service:
+        condition: service_healthy
+
+  # Pre-provisioned (grafana/provisioning/) with the Prometheus
+  # datasource and one starter dashboard (grafana/dashboards/) - opens
+  # straight to real data, no manual setup, on default admin/admin
+  # credentials (fine for a local demo stack, never for anything real).
+  grafana:
+    image: grafana/grafana:11.3.1
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
 volumes:
   kafka_data:
   subscription_postgres_data:
   billing_postgres_data:
   notification_mongo_data:
+  prometheus_data:
+  grafana_data:

@@ -3,6 +3,7 @@ package com.sublite.notification.application;
 import com.sublite.notification.domain.Notification;
 import com.sublite.notification.domain.NotificationSender;
 import com.sublite.notification.infrastructure.NotificationRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
@@ -32,11 +33,13 @@ public class NotificationService {
     private final NotificationRepository notifications;
     private final NotificationSender sender;
     private final Clock clock;
+    private final MeterRegistry meterRegistry;
 
-    public NotificationService(NotificationRepository notifications, NotificationSender sender, Clock clock) {
+    public NotificationService(NotificationRepository notifications, NotificationSender sender, Clock clock, MeterRegistry meterRegistry) {
         this.notifications = notifications;
         this.sender = sender;
         this.clock = clock;
+        this.meterRegistry = meterRegistry;
     }
 
     public void record(String eventId, String customerId, String subscriptionId, String type, String message) {
@@ -48,5 +51,6 @@ public class NotificationService {
             return;
         }
         sender.send(customerId, message);
+        meterRegistry.counter("notifications.recorded", "type", type).increment();
     }
 }

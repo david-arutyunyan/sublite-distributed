@@ -371,6 +371,42 @@ Circuit breaker живьём не открывался — при вероятн
 Spring/Kafka/Postgres — чистая композиция Resilience4j, тестировать это
 через реальный брокер было бы избыточно).
 
+## Наблюдаемость: метрики (шаг 9-10a, сделано)
+
+Prometheus + Grafana. Trace'инг (OpenTelemetry + Jaeger) — отдельный
+под-шаг, ещё не сделан.
+
+**Kafka-метрики почти бесплатно**: `spring.kafka.template.observation-enabled`
+и `spring.kafka.listener.observation-enabled` во всех трёх сервисах —
+две строчки конфига, ноль кода, и Spring Kafka сам публикует таймеры
+обработки и счётчики ошибок на listener (`spring_kafka_listener_seconds_*`)
+через Micrometer Observation API.
+
+**Бизнес-метрики — руками, там, где это реально что-то говорит о системе**,
+не généric-инструментация ради самого факта:
+- subscription-service: `subscriptions.purchased` (тег `plan`),
+  `subscriptions.cancellation.requested`,
+  `subscriptions.cancellation.outcome` (тег `outcome`: confirmed/compensated
+  — именно этот счётчик показывает сагу шага 7 живьём: сколько отмен
+  завершилось нормально против скольких потребовали компенсации).
+- billing-service: `charges` (тег `outcome`: succeeded/declined),
+  `refunds` (тег `outcome`: issued/failed),
+  `payment_gateway.retries`,
+  `payment_gateway.circuit_breaker.transitions` (тег `to_state`) — те же
+  события, что шаг 8 уже логировал, теперь ещё и на дашборде.
+- notification-service: `notifications.recorded` (тег `type`).
+
+Дашборд — `grafana/dashboards/sublite-overview.json`, автопровижининг
+(`grafana/provisioning/`) — открывается сразу с реальными данными, без
+ручной настройки datasource. Три ряда панелей: бизнес-события,
+resilience (retry/circuit breaker), системное здоровье (HTTP, JVM heap).
+
+Живая проверка: 30 покупок + 3 отмены подряд — все панели заполнились
+реальными данными, включая `Circuit breaker state transitions` (пусто —
+корректно, цепь ни разу не открывалась, см. шаг 8) и
+`Cancellation outcomes` (3 confirmed, 0 compensated — все три возврата
+прошли).
+
 ## Грабли
 
 1. Число партиций топика можно только увеличивать, никогда не уменьшать —

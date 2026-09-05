@@ -10,6 +10,7 @@ import com.sublite.billing.domain.RefundStatus;
 import com.sublite.billing.infrastructure.OutboxEventRepository;
 import com.sublite.billing.infrastructure.ProcessedMessageRepository;
 import com.sublite.billing.infrastructure.RefundRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -40,19 +41,22 @@ public class SubscriptionCancellationService {
     private final ProcessedMessageRepository processedMessages;
     private final PaymentGateway gateway;
     private final Clock clock;
+    private final MeterRegistry meterRegistry;
 
     public SubscriptionCancellationService(
             RefundRepository refunds,
             OutboxEventRepository outbox,
             ProcessedMessageRepository processedMessages,
             PaymentGateway gateway,
-            Clock clock
+            Clock clock,
+            MeterRegistry meterRegistry
     ) {
         this.refunds = refunds;
         this.outbox = outbox;
         this.processedMessages = processedMessages;
         this.gateway = gateway;
         this.clock = clock;
+        this.meterRegistry = meterRegistry;
     }
 
     @Transactional
@@ -83,6 +87,7 @@ public class SubscriptionCancellationService {
 
         log.info("Refund attempted: subscriptionId={}, refundId={}, outcome={}, correlationId={}",
                 subscriptionId, refund.getId(), status, correlationId);
+        meterRegistry.counter("refunds", "outcome", status == RefundStatus.ISSUED ? "issued" : "failed").increment();
     }
 
     private static Map<String, Object> refundPayload(UUID subscriptionId, Refund refund) {

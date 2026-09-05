@@ -4,6 +4,7 @@ import com.sublite.billing.domain.ChargeResult;
 import com.sublite.billing.domain.Money;
 import com.sublite.billing.domain.PaymentGateway;
 import com.sublite.billing.domain.PaymentGatewayUnavailableException;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -59,7 +60,8 @@ class ResilientPaymentGatewayTest {
                 flakyThenOk,
                 50, 10, 5000, 3,
                 3, 10,
-                2000
+                2000,
+                new SimpleMeterRegistry()
         );
 
         ChargeResult result = gateway.charge(AMOUNT);
@@ -82,7 +84,8 @@ class ResilientPaymentGatewayTest {
                 alwaysFails,
                 50, 4, 5000, 3,
                 1, 10,
-                2000
+                2000,
+                new SimpleMeterRegistry()
         );
 
         for (int i = 0; i < 4; i++) {
@@ -115,7 +118,8 @@ class ResilientPaymentGatewayTest {
                 slow,
                 50, 10, 5000, 3,
                 1, 10,
-                100
+                100,
+                new SimpleMeterRegistry()
         );
 
         long start = System.currentTimeMillis();

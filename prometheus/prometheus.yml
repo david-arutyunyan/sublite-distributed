@@ -1,0 +1,22 @@
+global:
+  # A demo-friendly cadence, not a production one - fast enough to watch
+  # a counter move on the dashboard within a few seconds of a curl,
+  # matching the same "see it happen live" bar every other step in this
+  # project has been held to.
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: subscription-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["subscription-service:8081"]
+
+  - job_name: billing-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["billing-service:8082"]
+
+  - job_name: notification-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["notification-service:8083"]

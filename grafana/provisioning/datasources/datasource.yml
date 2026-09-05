@@ -1,0 +1,14 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    # A fixed uid, not the auto-generated one file-provisioning would
+    # otherwise assign - the dashboard JSON below references this
+    # datasource by uid, and that reference needs to be stable across
+    # every `docker compose up`, not just whatever Grafana happened to
+    # generate on first boot.
+    uid: prometheus

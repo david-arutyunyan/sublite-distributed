@@ -28,7 +28,9 @@ docker compose up -d --build
 `docs/architecture.md` + [Kafka UI](http://localhost:8090) для просмотра
 топиков/партиций/сообщений + subscription-service (`localhost:8081`),
 billing-service (`localhost:8082`) и notification-service (`localhost:8083`) —
-первые два со своим Postgres, последний со своим MongoDB.
+первые два со своим Postgres, последний со своим MongoDB — плюс
+[Prometheus](http://localhost:9090) и [Grafana](http://localhost:3000)
+(анонимный доступ, дашборд открывается сразу).
 
 ```bash
 docker compose ps
@@ -124,6 +126,12 @@ Kafka. Видно в логах:
 docker compose logs billing-service | grep -i "payment gateway"
 ```
 
+Дашборд Grafana (`grafana/dashboards/sublite-overview.json`, автопровижининг
+— открывается сразу с реальными данными): [localhost:3000/d/sublite-overview](http://localhost:3000/d/sublite-overview).
+Бизнес-события (покупки, исходы списаний/возвратов, исходы отмен),
+resilience (retry/circuit breaker), системное здоровье (HTTP, JVM) —
+подробности в `docs/architecture.md`.
+
 ## План
 
 1. ~~Границы сервисов и схема событий~~ — [docs/architecture.md](docs/architecture.md)
@@ -133,7 +141,8 @@ docker compose logs billing-service | grep -i "payment gateway"
 5. ~~Идемпотентные консьюмеры (processed_messages), notification-service~~
 6. ~~DLQ + retry + replay на реальных consumer'ах~~
 7. ~~Saga с компенсацией на сценарий отмены подписки~~
-8. ~~Resilience4j: circuit breaker, retry, таймауты~~ — этот шаг
-9-10. Prometheus, Grafana, OpenTelemetry, Jaeger
+8. ~~Resilience4j: circuit breaker, retry, таймауты~~
+9-10a. ~~Prometheus + Grafana~~ — этот шаг
+9-10b. OpenTelemetry + Jaeger
 11. Kubernetes-манифесты под kind
 12. README и диаграммы

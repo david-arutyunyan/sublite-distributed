@@ -20,6 +20,15 @@ spring:
 
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    # Micrometer Observation-based instrumentation, built into Spring
+    # Kafka - free per-listener/per-send timers and error counts
+    # (spring_kafka_listener_seconds_*, spring_kafka_template_seconds_*)
+    # with zero custom code, on top of the hand-written business counters
+    # below.
+    template:
+      observation-enabled: true
+    listener:
+      observation-enabled: true
 
 management:
   endpoints:

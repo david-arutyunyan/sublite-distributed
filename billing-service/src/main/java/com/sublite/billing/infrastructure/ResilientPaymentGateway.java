@@ -10,6 +10,7 @@ import io.github.resilience4j.retry.Retry;
 import io.github.resilience4j.retry.RetryConfig;
 import io.github.resilience4j.timelimiter.TimeLimiter;
 import io.github.resilience4j.timelimiter.TimeLimiterConfig;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -73,10 +74,11 @@ public class ResilientPaymentGateway implements PaymentGateway {
             @Value("${sublite.resilience.circuit-breaker.permitted-calls-in-half-open-state:3}") int permittedCallsInHalfOpenState,
             @Value("${sublite.resilience.retry.max-attempts:3}") int retryMaxAttempts,
             @Value("${sublite.resilience.retry.wait-duration-ms:200}") long retryWaitDurationMs,
-            @Value("${sublite.resilience.timeout-ms:2000}") long timeoutMs
+            @Value("${sublite.resilience.timeout-ms:2000}") long timeoutMs,
+            MeterRegistry meterRegistry
     ) {
         this(new RandomPaymentGateway(), failureRateThreshold, slidingWindowSize, waitDurationInOpenStateMs,
-                permittedCallsInHalfOpenState, retryMaxAttempts, retryWaitDurationMs, timeoutMs);
+                permittedCallsInHalfOpenState, retryMaxAttempts, retryWaitDurationMs, timeoutMs, meterRegistry);
     }
 
     /**
@@ -94,7 +96,8 @@ public class ResilientPaymentGateway implements PaymentGateway {
             int permittedCallsInHalfOpenState,
             int retryMaxAttempts,
             long retryWaitDurationMs,
-            long timeoutMs
+            long timeoutMs,
+            MeterRegistry meterRegistry
     ) {
         this.delegate = delegate;
 
@@ -111,8 +114,11 @@ public class ResilientPaymentGateway implements PaymentGateway {
                 .permittedNumberOfCallsInHalfOpenState(permittedCallsInHalfOpenState)
                 .build();
         this.circuitBreaker = CircuitBreaker.of(INSTANCE_NAME, circuitBreakerConfig);
-        circuitBreaker.getEventPublisher().onStateTransition(event ->
-                log.warn("Payment gateway circuit breaker state transition: {}", event.getStateTransition()));
+        circuitBreaker.getEventPublisher().onStateTransition(event -> {
+            log.warn("Payment gateway circuit breaker state transition: {}", event.getStateTransition());
+            meterRegistry.counter("payment_gateway.circuit_breaker.transitions",
+                    "to_state", event.getStateTransition().getToState().name()).increment();
+        });
 
         RetryConfig retryConfig = RetryConfig.custom()
                 .maxAttempts(retryMaxAttempts)
@@ -127,9 +133,11 @@ public class ResilientPaymentGateway implements PaymentGateway {
                 .retryExceptions(PaymentGatewayUnavailableException.class)
                 .build();
         this.retry = Retry.of(INSTANCE_NAME, retryConfig);
-        retry.getEventPublisher().onRetry(event ->
-                log.warn("Retrying payment gateway call (attempt {}): {}",
-                        event.getNumberOfRetryAttempts(), event.getLastThrowable().getMessage()));
+        retry.getEventPublisher().onRetry(event -> {
+            log.warn("Retrying payment gateway call (attempt {}): {}",
+                    event.getNumberOfRetryAttempts(), event.getLastThrowable().getMessage());
+            meterRegistry.counter("payment_gateway.retries").increment();
+        });
 
         this.timeLimiter = TimeLimiter.of(INSTANCE_NAME, TimeLimiterConfig.custom()
                 .timeoutDuration(Duration.ofMillis(timeoutMs))

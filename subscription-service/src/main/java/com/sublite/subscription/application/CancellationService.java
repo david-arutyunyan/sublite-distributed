@@ -7,6 +7,7 @@ import com.sublite.subscription.domain.SubscriptionNotFoundException;
 import com.sublite.subscription.infrastructure.OutboxEventRepository;
 import com.sublite.subscription.infrastructure.ProcessedMessageRepository;
 import com.sublite.subscription.infrastructure.SubscriptionRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -50,17 +51,20 @@ public class CancellationService {
     private final ProcessedMessageRepository processedMessages;
     private final OutboxEventRepository outbox;
     private final Clock clock;
+    private final MeterRegistry meterRegistry;
 
     public CancellationService(
             SubscriptionRepository subscriptions,
             ProcessedMessageRepository processedMessages,
             OutboxEventRepository outbox,
-            Clock clock
+            Clock clock,
+            MeterRegistry meterRegistry
     ) {
         this.subscriptions = subscriptions;
         this.processedMessages = processedMessages;
         this.outbox = outbox;
         this.clock = clock;
+        this.meterRegistry = meterRegistry;
     }
 
     @Transactional
@@ -88,6 +92,7 @@ public class CancellationService {
         ));
 
         log.info("Cancellation requested: subscriptionId={}, correlationId={}", subscriptionId, correlationId);
+        meterRegistry.counter("subscriptions.cancellation.requested").increment();
         return subscription;
     }
 
@@ -122,6 +127,7 @@ public class CancellationService {
                         now
                 ));
                 log.info("Cancellation confirmed: subscriptionId={}, correlationId={}", subscriptionId, correlationId);
+                meterRegistry.counter("subscriptions.cancellation.outcome", "outcome", "confirmed").increment();
             } else {
                 log.info("Ignoring RefundIssued - subscription not in CANCEL_PENDING: subscriptionId={}, currentStatus={}",
                         subscriptionId, subscription.getStatus());
@@ -161,6 +167,7 @@ public class CancellationService {
                 ));
                 log.warn("Cancellation FAILED, reverted to ACTIVE (compensating transaction): subscriptionId={}, reason={}, correlationId={}",
                         subscriptionId, reason, correlationId);
+                meterRegistry.counter("subscriptions.cancellation.outcome", "outcome", "compensated").increment();
             } else {
                 log.info("Ignoring RefundFailed - subscription not in CANCEL_PENDING: subscriptionId={}, currentStatus={}",
                         subscriptionId, subscription.getStatus());

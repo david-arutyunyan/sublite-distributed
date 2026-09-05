@@ -7,6 +7,7 @@ import com.sublite.subscription.domain.Subscription;
 import com.sublite.subscription.infrastructure.OutboxEventRepository;
 import com.sublite.subscription.infrastructure.PlanPriceRepository;
 import com.sublite.subscription.infrastructure.SubscriptionRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -39,17 +40,20 @@ public class SubscriptionPurchaseService {
     private final PlanPriceRepository planPrices;
     private final OutboxEventRepository outbox;
     private final Clock clock;
+    private final MeterRegistry meterRegistry;
 
     public SubscriptionPurchaseService(
             SubscriptionRepository subscriptions,
             PlanPriceRepository planPrices,
             OutboxEventRepository outbox,
-            Clock clock
+            Clock clock,
+            MeterRegistry meterRegistry
     ) {
         this.subscriptions = subscriptions;
         this.planPrices = planPrices;
         this.outbox = outbox;
         this.clock = clock;
+        this.meterRegistry = meterRegistry;
     }
 
     @Transactional
@@ -73,6 +77,7 @@ public class SubscriptionPurchaseService {
 
         log.info("Subscription created: customerId={}, subscriptionId={}, planPriceId={}, correlationId={}",
                 customerId, subscription.getId(), planPriceId, correlationId);
+        meterRegistry.counter("subscriptions.purchased", "plan", planPrice.getPlan().getCode()).increment();
         return subscription;
     }
 

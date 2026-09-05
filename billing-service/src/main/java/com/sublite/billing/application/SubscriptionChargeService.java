@@ -12,6 +12,7 @@ import com.sublite.billing.infrastructure.InvoiceRepository;
 import com.sublite.billing.infrastructure.OutboxEventRepository;
 import com.sublite.billing.infrastructure.PaymentAttemptRepository;
 import com.sublite.billing.infrastructure.ProcessedMessageRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -48,6 +49,7 @@ public class SubscriptionChargeService {
     private final ProcessedMessageRepository processedMessages;
     private final PaymentGateway gateway;
     private final Clock clock;
+    private final MeterRegistry meterRegistry;
 
     public SubscriptionChargeService(
             InvoiceRepository invoices,
@@ -55,7 +57,8 @@ public class SubscriptionChargeService {
             OutboxEventRepository outbox,
             ProcessedMessageRepository processedMessages,
             PaymentGateway gateway,
-            Clock clock
+            Clock clock,
+            MeterRegistry meterRegistry
     ) {
         this.invoices = invoices;
         this.paymentAttempts = paymentAttempts;
@@ -63,6 +66,7 @@ public class SubscriptionChargeService {
         this.processedMessages = processedMessages;
         this.gateway = gateway;
         this.clock = clock;
+        this.meterRegistry = meterRegistry;
     }
 
     @Transactional
@@ -102,6 +106,7 @@ public class SubscriptionChargeService {
 
         log.info("Charge attempted: subscriptionId={}, invoiceId={}, outcome={}, correlationId={}",
                 subscriptionId, invoice.getId(), attempt.getStatus(), correlationId);
+        meterRegistry.counter("charges", "outcome", attempt.succeeded() ? "succeeded" : "declined").increment();
     }
 
     private PaymentAttempt recordAttempt(Invoice invoice, ChargeResult result, Instant now) {
